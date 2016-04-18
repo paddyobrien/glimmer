@@ -36,6 +36,15 @@ export abstract class Block {
     this.children = options.children;
     this.program = options.program;
   }
+
+  initBlocks(blocks = this['children'], parentTable = this['symbolTable']): this {
+    blocks.forEach(block => {
+      debugger;
+      let table = SymbolTable.initForBlock({ parent: parentTable, block });
+      this.initBlocks(block['children'], table);
+    });
+    return this;
+  }
 }
 
 export interface InlineBlockOptions extends BlockOptions {
@@ -64,13 +73,6 @@ export class InlineBlock extends Block {
 }
 
 export abstract class TopLevelTemplate extends Block {
-  initBlocks(blocks = this['children'], parentTable = this['symbolTable']): this {
-    blocks.forEach(block => {
-      let table = SymbolTable.initForBlock({ parent: parentTable, block });
-      this.initBlocks(block['children'], table);
-    });
-    return this;
-  }
 }
 
 export class EntryPoint extends TopLevelTemplate {

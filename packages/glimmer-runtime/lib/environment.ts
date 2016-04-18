@@ -5,6 +5,10 @@ import { Reference, OpaqueIterable } from 'glimmer-reference';
 import { NULL_REFERENCE, ConditionalReference } from './references';
 
 import {
+  PartialDefinition
+} from './partial';
+
+import {
   Component,
   ComponentManager,
   ComponentDefinition
@@ -33,6 +37,7 @@ import IfSyntax from './syntax/builtins/if';
 import UnlessSyntax from './syntax/builtins/unless';
 import WithSyntax from './syntax/builtins/with';
 import EachSyntax from './syntax/builtins/each';
+import PartialSyntax from './syntax/builtins/partial';
 
 type ScopeSlot = PathReference<Opaque> | InlineBlock;
 
@@ -129,10 +134,17 @@ export abstract class Environment {
     let {
       isSimple,
       isBlock,
+      isInline,
       key,
       args,
       templates
     } = statement;
+
+    if (isSimple && isInline) {
+      if (key === 'partial') {
+        return new PartialSyntax({ args });
+      }
+    }
 
     if (isSimple && isBlock) {
       switch (key) {
@@ -194,6 +206,8 @@ export abstract class Environment {
 
   abstract hasHelper(helperName: InternedString[]): boolean;
   abstract lookupHelper(helperName: InternedString[]): Helper;
+  abstract hasPartial(partialName: InternedString[]): boolean;
+  abstract lookupPartial(PartialName: InternedString[]): PartialDefinition;
   abstract hasComponentDefinition(tagName: InternedString[]): boolean;
   abstract getComponentDefinition(tagName: InternedString[]): ComponentDefinition<Opaque>;
 }

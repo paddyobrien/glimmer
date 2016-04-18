@@ -23,6 +23,9 @@ import {
   PopDynamicScopeOpcode,
   BindDynamicScopeOpcode,
 
+  // Partials
+  PartialDefinition,
+
   // Components
   Component,
   ComponentManager,
@@ -48,7 +51,11 @@ import {
   ElementOperations,
 } from "glimmer-runtime";
 
-import { compile as rawCompile, compileLayout as rawCompileLayout } from "./helpers";
+import {
+  compileRealSpec,
+  compile as rawCompile,
+  compileLayout as rawCompileLayout
+} from "./helpers";
 
 import {
   FIXME,
@@ -417,6 +424,7 @@ class HelperReference implements PathReference<Opaque> {
 
 export class TestEnvironment extends Environment {
   private helpers = dict<GlimmerHelper>();
+  private partials = dict<PartialDefinition>();
   private components = dict<ComponentDefinition<any>>();
 
   constructor(dom?: IDOMHelper) {
@@ -428,6 +436,10 @@ export class TestEnvironment extends Environment {
 
   registerHelper(name: string, helper: UserHelper) {
     this.helpers[name] = (args: EvaluatedArgs) => new HelperReference(helper, args);
+  }
+
+  registerPartial(name: string, source: string) {
+    this.partials[name] = new PartialDefinition(name, this.compileSpec(source));
   }
 
   registerComponent(name: string, definition: ComponentDefinition<any>) {
@@ -505,7 +517,22 @@ export class TestEnvironment extends Environment {
     let helper = this.helpers[helperName];
 
     if (!helper) throw new Error(`Helper for ${helperParts.join('.')} not found.`);
-    return this.helpers[helperName];
+
+    return helper;
+  }
+
+  hasPartial(partialName: InternedString[]) {
+    return partialName.length === 1 && (<string>partialName[0] in this.partials);
+  }
+
+  lookupPartial(partialParts: string[]) {
+    let partialName = partialParts[0];
+
+    let partial = this.partials[partialName];
+
+    if (!partial) throw new Error(`partial for ${partialParts.join('.')} not found.`);
+
+    return partial;
   }
 
   hasComponentDefinition(name: InternedString[]): boolean {
@@ -514,6 +541,10 @@ export class TestEnvironment extends Environment {
 
   getComponentDefinition(name: InternedString[]): ComponentDefinition<any> {
     return this.components[<string>name[0]];
+  }
+
+  compileSpec(template: string) {
+    return compileRealSpec(template, { env: this });
   }
 
   compile(template: string) {

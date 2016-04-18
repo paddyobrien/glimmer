@@ -951,8 +951,8 @@ module("Components - generic - attrs");
 module("Components - integration - scope");
 
 testComponent('correct scope - conflicting local names', {
-  layout: stripTight`{{#with @a as |item|}}{{@a}}: {{item}}, {{#with @b as |item|}}
-                     {{@b}}: {{item}}, {{#with @c as |item|}}{{@c}}: {{item}}{{/with}}{{/with}}{{/with}}`,
+  layout: stripTight`{{#if @a as |item|}}{{@a}}: {{item}}, {{#if @b as |item|}}
+                     {{@b}}: {{item}}, {{#if @c as |item|}}{{@c}}: {{item}}{{/if}}{{/if}}{{/if}}`,
   invokeAs: { props: { a: '"A"', b: '"B"', c: '"C"' } },
   expected: 'A: A, B: B, C: C'
 });
