@@ -1,30 +1,5 @@
 import { FIXME, Opaque, Slice, LinkedList, InternedString } from 'glimmer-util';
 import { OpSeq, Opcode } from './opcodes';
-import {
-  OpenPrimitiveElementOpcode,
-  OpenDynamicPrimitiveElementOpcode,
-  CloseElementOpcode
-} from './compiled/opcodes/dom';
-import {
-  DidCreateElementOpcode,
-  PutDynamicComponentDefinitionOpcode,
-  PutComponentDefinitionOpcode,
-  ShadowAttributesOpcode,
-  OpenComponentOpcode,
-  CloseComponentOpcode
-} from './compiled/opcodes/component';
-import {
-  BindNamedArgsOpcode,
-  BindBlocksOpcode,
-  BindPositionalArgsOpcode,
-  EnterOpcode,
-  ExitOpcode,
-  LabelOpcode,
-  PutArgsOpcode,
-  PutValueOpcode,
-  JumpUnlessOpcode,
-  TestOpcode
-} from './compiled/opcodes/vm';
 
 import * as Syntax from './syntax/core';
 import { Environment } from './environment';
@@ -39,7 +14,7 @@ import OpcodeBuilder, {
 import {
   Statement as StatementSyntax,
   Attribute as AttributeSyntax,
-  StatementCompilationBuffer
+  StatementCompilationBuffer,
 } from './syntax';
 
 import {
@@ -50,6 +25,8 @@ import {
   FunctionExpression,
   default as makeFunctionExpression
 } from './compiled/expressions/function';
+
+import OpcodeBuilderDSL from './compiled/opcodes/builder';
 
 import * as Component from './component/interfaces';
 import { CACHED_LAYOUT } from './component/interfaces';
@@ -67,24 +44,25 @@ abstract class Compiler {
     this.symbolTable = block.symbolTable;
   }
 
-  protected compileStatement(statement: StatementSyntax, ops: StatementCompilationBuffer) {
+  protected compileStatement(statement: StatementSyntax, ops: OpcodeBuilderDSL) {
     this.env.statement(statement).compile(ops, this.env, this.symbolTable);
   }
 }
 
-function compileStatement(env: Environment, statement: StatementSyntax, ops: StatementCompilationBuffer, symbolTable: SymbolTable) {
+function compileStatement(env: Environment, statement: StatementSyntax, ops: OpcodeBuilderDSL, symbolTable: SymbolTable) {
   env.statement(statement).compile(ops, env, symbolTable);
 }
 
 export default Compiler;
 
 export class EntryPointCompiler extends Compiler {
-  private ops: StatementCompilationBuffer;
+  private ops: OpcodeBuilderDSL;
   protected block: EntryPoint;
 
   constructor(template: EntryPoint, env: Environment) {
     super(template, env);
-    this.ops = new CompileIntoList(env, template.symbolTable);
+    let list = new CompileIntoList(env, template.symbolTable);
+    this.ops = new OpcodeBuilderDSL(list, env);
   }
 
   compile(): OpSeq {
@@ -120,21 +98,22 @@ export class EntryPointCompiler extends Compiler {
 }
 
 export class InlineBlockCompiler extends Compiler {
-  private ops: CompileIntoList;
+  private ops: OpcodeBuilderDSL;
   protected block: InlineBlock;
   protected current: StatementSyntax;
 
   constructor(block: InlineBlock, env: Environment) {
     super(block, env);
-    this.ops = new CompileIntoList(env, block.symbolTable);
+    let list = new CompileIntoList(env, block.symbolTable);
+    this.ops = new OpcodeBuilderDSL(list, env);
   }
 
-  compile(): CompileIntoList {
+  compile(): OpSeq {
     let { block, ops } = this;
     let { program } = block;
 
     if (block.hasPositionalParameters()) {
-      ops.append(new BindPositionalArgsOpcode({ block }));
+      ops.bindPositionalArgs(block);
     }
 
     let current = program.head();
@@ -145,7 +124,7 @@ export class InlineBlockCompiler extends Compiler {
       current = next;
     }
 
-    return ops;
+    return ops.toOpSeq();
   }
 }
 
@@ -267,49 +246,49 @@ class WrappedBuilder {
     let { env, layout } = this;
 
     let symbolTable = layout.symbolTable;
+    let buffer = new CompileIntoList(env, layout.symbolTable);
+    let dsl = new OpcodeBuilderDSL(buffer, env);
 
-    let list = new CompileIntoList(env, symbolTable);
+    dsl.startLabels();
 
-    let tagExpr;
     if (this.tag.isDynamic) {
-      let BODY = new LabelOpcode({ label: 'BODY' });
-      tagExpr = this.tag.dynamicTagName.compile(list, env);
-      list.append(new PutValueOpcode({ expression: tagExpr }));
-      list.append(new TestOpcode());
-      list.append(new JumpUnlessOpcode({ target: BODY }));
-      list.append(new OpenDynamicPrimitiveElementOpcode());
-      list.append(new DidCreateElementOpcode());
-      this.attrs['buffer'].forEach(statement => compileStatement(env, statement, list, symbolTable));
-      list.append(BODY);
-    } else if(this.tag.isStatic) {
+      dsl.putValue(this.tag.dynamicTagName);
+      dsl.test();
+      dsl.jumpUnless('BODY');
+      dsl.openDynamicPrimitiveElement();
+      dsl.didCreateElement();
+      this.attrs['buffer'].forEach(statement => compileStatement(env, statement, dsl, symbolTable));
+      dsl.label('BODY');
+    } else if (this.tag.isStatic) {
       let tag = this.tag.staticTagName;
-      list.append(new OpenPrimitiveElementOpcode({ tag }));
-      list.append(new DidCreateElementOpcode());
-      this.attrs['buffer'].forEach(statement => compileStatement(env, statement, list, symbolTable));
+      dsl.openPrimitiveElement(tag);
+      dsl.didCreateElement();
+      this.attrs['buffer'].forEach(statement => compileStatement(env, statement, dsl, symbolTable));
     }
 
     if (layout.hasNamedParameters()) {
-      list.append(BindNamedArgsOpcode.create(layout));
+      dsl.bindNamedArgsForLayout(layout);
     }
 
     if (layout.hasYields()) {
-      list.append(BindBlocksOpcode.create(layout));
+      dsl.bindBlocksForLayout(layout);
     }
 
-    layout.program.forEachNode(statement => compileStatement(env, statement, list, layout.symbolTable));
+    layout.program.forEachNode(statement => compileStatement(env, statement, dsl, layout.symbolTable));
 
     if (this.tag.isDynamic) {
-      let END = new LabelOpcode({ label: 'END' });
-      list.append(new PutValueOpcode({ expression: tagExpr }));
-      list.append(new TestOpcode());
-      list.append(new JumpUnlessOpcode({ target: END }));
-      list.append(new CloseElementOpcode());
-      list.append(END);
-    } else if(this.tag.isStatic) {
-      list.append(new CloseElementOpcode());
+      dsl.putValue(this.tag.dynamicTagName);
+      dsl.test();
+      dsl.jumpUnless('END');
+      dsl.closeElement();
+      dsl.label('END');
+    } else if (this.tag.isStatic) {
+      dsl.closeElement();
     }
 
-    return new CompiledBlock(list, symbolTable.size);
+    dsl.stopLabels();
+
+    return new CompiledBlock(dsl.toOpSeq(), symbolTable.size);
   }
 }
 
@@ -331,31 +310,36 @@ class UnwrappedBuilder {
   compile(): CompiledBlock {
     let { env, layout } = this;
 
-    let list = new CompileIntoList(env, layout.symbolTable);
+    let buffer = new CompileIntoList(env, layout.symbolTable);
+    let dsl = new OpcodeBuilderDSL(buffer, env);
+
+    dsl.startLabels();
 
     if (layout.hasNamedParameters()) {
-      list.append(BindNamedArgsOpcode.create(layout));
+      dsl.bindNamedArgsForLayout(layout);
     }
 
     if (layout.hasYields()) {
-      list.append(BindBlocksOpcode.create(layout));
+      dsl.bindBlocksForLayout(layout);
     }
 
     let attrs = this.attrs['buffer'];
     let attrsInserted = false;
 
     this.layout.program.forEachNode(statement => {
-      compileStatement(env, statement, list, layout.symbolTable);
+      compileStatement(env, statement, dsl, layout.symbolTable);
 
       if (!attrsInserted && isOpenElement(statement)) {
-        list.append(new DidCreateElementOpcode());
-        list.append(new ShadowAttributesOpcode());
-        attrs.forEach(statement => compileStatement(env, statement, list, layout.symbolTable));
+        dsl.didCreateElement();
+        dsl.shadowAttributes();
+        attrs.forEach(statement => compileStatement(env, statement, dsl, layout.symbolTable));
         attrsInserted = true;
       }
     });
 
-    return new CompiledBlock(list, layout.symbolTable.size);
+    dsl.stopLabels();
+
+    return new CompiledBlock(dsl.toOpSeq(), layout.symbolTable.size);
   }
 }
 
@@ -395,44 +379,34 @@ class ComponentAttrsBuilder implements Component.ComponentAttrsBuilder {
 }
 
 class ComponentBuilder {
-  private compiler: CompileIntoList;
   private env: Environment;
 
-  constructor(compiler: CompileIntoList, env: Environment) {
-    this.compiler = compiler;
-    this.env = env;
+  constructor(private dsl: OpcodeBuilderDSL) {
+    this.env = dsl.env;
   }
 
-  static({ definition, args: rawArgs, shadow, templates }: StaticComponentOptions) {
-    let { compiler, env } = this;
-
-    let args = rawArgs.compile(compiler, env);
-    compiler.append(new PutComponentDefinitionOpcode({ args, definition }));
-    compiler.append(new OpenComponentOpcode({ shadow, templates }));
-    compiler.append(new CloseComponentOpcode());
+  static({ definition, args, shadow, templates }: StaticComponentOptions) {
+    this.dsl.unit({ templates }, dsl => {
+      dsl.putComponentDefinition(args, definition);
+      dsl.openComponent(shadow);
+      dsl.closeComponent();
+    });
   }
 
-  dynamic({ definitionArgs: rawDefArgs, definition: rawDefinition, args: rawArgs, shadow, templates }: DynamicComponentOptions) {
-    let { compiler, env } = this;
-
-    let BEGIN = new LabelOpcode({ label: "BEGIN" });
-    let END = new LabelOpcode({ label: "END" });
-
-    let definitionArgs = rawDefArgs.compile(compiler, env);
-    let definition = makeFunctionExpression(rawDefinition).compile(compiler, env);
-    let args = rawArgs.compile(compiler, env);
-
-    compiler.append(new EnterOpcode({ begin: BEGIN, end: END }));
-    compiler.append(BEGIN);
-    compiler.append(new PutArgsOpcode({ args: definitionArgs }));
-    compiler.append(new PutValueOpcode({ expression: definition }));
-    compiler.append(new TestOpcode());
-    compiler.append(new JumpUnlessOpcode({ target: END }));
-    compiler.append(new PutDynamicComponentDefinitionOpcode({ args }));
-    compiler.append(new OpenComponentOpcode({ shadow, templates }));
-    compiler.append(new CloseComponentOpcode());
-    compiler.append(END);
-    compiler.append(new ExitOpcode());
+  dynamic({ definitionArgs, definition, args, shadow, templates }: DynamicComponentOptions) {
+    this.dsl.unit({ templates }, dsl => {
+      dsl.enter('BEGIN', 'END');
+      dsl.label('BEGIN');
+      dsl.putArgs(definitionArgs);
+      dsl.putValue(makeFunctionExpression(definition));
+      dsl.test();
+      dsl.jumpUnless('END');
+      dsl.putDynamicComponentDefinition(args);
+      dsl.openComponent(shadow);
+      dsl.closeComponent();
+      dsl.label('END');
+      dsl.exit();
+    });
   }
 }
 
@@ -447,7 +421,8 @@ export class CompileIntoList extends LinkedList<Opcode> implements OpcodeBuilder
     this.env = env;
     this.symbolTable = symbolTable;
 
-    this.component = new ComponentBuilder(this, env);
+    let dsl = new OpcodeBuilderDSL(this, env);
+    this.component = new ComponentBuilder(dsl);
   }
 
   getLocalSymbol(name: InternedString): number {

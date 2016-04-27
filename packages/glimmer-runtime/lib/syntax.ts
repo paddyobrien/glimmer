@@ -7,6 +7,7 @@ import { InlineBlock } from './compiled/blocks';
 import SymbolTable from './symbol-table';
 
 import OpcodeBuilder from './opcode-builder';
+import OpcodeBuilderDSL from './compiled/opcodes/builder';
 
 import {
   Statement as SerializedStatement,
@@ -66,7 +67,7 @@ export abstract class Statement implements LinkedListNode {
     return new (<new (any) => any>this.constructor)(this);
   }
 
-  abstract compile(opcodes: StatementCompilationBuffer, env: Environment, symbolTable: SymbolTable);
+  abstract compile(opcodes: OpcodeBuilderDSL, env: Environment, symbolTable: SymbolTable);
 
   scan(scanner: BlockScanner): Statement {
     return this;
