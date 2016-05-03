@@ -6,7 +6,8 @@ import {
   SerializedTemplate,
   Core,
   Statement,
-  Expression
+  Expression,
+  TemplateMeta
 } from 'glimmer-wire-format';
 
 type str = string;
@@ -32,11 +33,13 @@ export class Block {
 }
 
 export class Template extends Block {
-  public meta: Object = null;
-
   public yields = new DictSet();
   public named = new DictSet();
   public blocks: Block[] = [];
+
+  constructor(private meta: TemplateMeta) {
+    super();
+  }
 
   toJSON(): SerializedTemplate {
     return {
@@ -45,25 +48,22 @@ export class Template extends Block {
       named: this.named.toArray(),
       yields: this.yields.toArray(),
       blocks: this.blocks.map(b => b.toJSON()),
-      meta: null
+      meta: this.meta
     };
   }
 }
 
 export default class JavaScriptCompiler {
-  static process(opcodes): Template {
-    let compiler = new JavaScriptCompiler(opcodes);
+  static process(opcodes: any[], meta: TemplateMeta): Template {
+    let template = new Template(meta);
+    let compiler = new JavaScriptCompiler(opcodes, template);
     return compiler.process();
   }
 
-  private template: Template = null;
   private blocks = new Stack<Block>();
-  private opcodes: any[];
   private values: StackValue[] = [];
 
-  constructor(opcodes) {
-    this.opcodes = opcodes;
-    this.template = new Template();
+  constructor(public opcodes: any[], public template: Template) {
   }
 
   process() {

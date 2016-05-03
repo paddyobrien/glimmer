@@ -6,5 +6,3 @@ export {
 export {
   default as TemplateCompiler
 } from './lib/template-compiler';
-
-export { default as TemplateVisitor } from './lib/template-visitor';

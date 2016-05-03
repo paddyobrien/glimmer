@@ -128,13 +128,15 @@ export namespace Statements {
 
 export type Statement = Statements.Statement;
 
+export type TemplateMeta = Object;
+
 export interface SerializedTemplate {
   statements: Statements.Statement[];
   locals: InternedString[];
   named: InternedString[];
   yields: InternedString[];
   blocks: SerializedBlock[];
-  meta: Object;
+  meta: TemplateMeta;
 }
 
 export interface SerializedBlock {

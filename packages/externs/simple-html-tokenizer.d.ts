@@ -6,7 +6,20 @@ declare module "simple-html-tokenizer/evented-tokenizer" {
   import EntityParser from "simple-html-tokenizer/entity-parser";
 
   export default class EventedTokenizer {
-    constructor(object: Object, parser: EntityParser)
+    public line: number;
+    public column: number;
+    public tagLine: number;
+    public tagColumn: number;
+    public state: string;
+
+    constructor(object: Object, parser: EntityParser);
+
+    reset(): void;
+    tokenize(input: string): void;
+    tokenizePart(input: string): void;
+    tokenizeEOF(): void;
+    flushData(): void;
+    peek(): string;
   }
 }
 

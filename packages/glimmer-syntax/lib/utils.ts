@@ -1,3 +1,6 @@
+import * as Node from './builders';
+import { Node as INode } from './builders';
+
 import { indexOfArray } from "glimmer-util";
 // Regex to validate the identifier for block parameters.
 // Based on the ID validation regex in Handlebars.
@@ -8,12 +11,12 @@ let ID_INVERSE_PATTERN = /[!"#%-,\.\/;->@\[-\^`\{-~]/;
 // If it does, registers the block params with the program and
 // removes the corresponding attributes from the element.
 
-export function parseElementBlockParams(element) {
+export function parseElementBlockParams(element: Node.Element) {
   let params = parseBlockParams(element);
   if (params) element.blockParams = params;
 }
 
-function parseBlockParams(element) {
+function parseBlockParams(element: Node.Element) {
   let l = element.attributes.length;
   let attrNames = [];
 
@@ -50,22 +53,9 @@ function parseBlockParams(element) {
   }
 }
 
-export function childrenFor(node) {
-  if (node.type === 'Program') {
-    return node.body;
-  }
-  if (node.type === 'ElementNode') {
-    return node.children;
-  }
-}
-
-export function appendChild(parent, node) {
-  childrenFor(parent).push(node);
-}
-
-export function isHelper(mustache) {
-  return (mustache.params && mustache.params.length > 0) ||
-    (mustache.hash && mustache.hash.pairs.length > 0);
+export function isHelper(mustache: Node.Mustache) {
+  return (mustache.args.positional && mustache.args.positional.expressions.length > 0) ||
+    (mustache.args.named && mustache.args.named.pairs.length > 0);
 }
 
 export function unwrapMustache(mustache) {

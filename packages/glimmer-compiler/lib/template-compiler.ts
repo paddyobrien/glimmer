@@ -1,17 +1,19 @@
-import TemplateVisitor from "./template-visitor";
 import JavaScriptCompiler from "./javascript-compiler";
+import { TemplateMeta } from "glimmer-wire-format";
 import { getAttrNamespace } from "glimmer-util";
-import { isHelper } from "glimmer-syntax";
+import { isHelper, AST } from "glimmer-syntax";
 import { assert } from "glimmer-util";
 
+interface TemplateCompilerOptions {
+  meta: TemplateMeta;
+}
+
 export default class TemplateCompiler {
-  static compile(options, ast) {
-    let templateVisitor = new TemplateVisitor();
-    templateVisitor.visit(ast);
+  static compile(options: TemplateCompilerOptions, ast: AST.Program) {
 
     let compiler = new TemplateCompiler(options);
-    let opcodes = compiler.process(templateVisitor.actions);
-    return JavaScriptCompiler.process(opcodes);
+    let opcodes = compiler.process(ast);
+    return JavaScriptCompiler.process(opcodes, options.meta);
   }
 
   private options: Object;

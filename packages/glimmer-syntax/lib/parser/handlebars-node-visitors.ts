@@ -1,35 +1,52 @@
-import b from "../builders";
-import { appendChild } from "../utils";
+import { Stack } from "glimmer-util";
+import { fromHBS as hbs, builders as b, Node as INode } from "../builders";
+import * as Node from "../builders";
+import { TokenizerEventHandlers, Attribute, Tag } from "./tokenizer-event-handlers";
+import * as AST from "./handlebars-ast";
 
-export default {
+class Fragment implements Node.HasChildren {
+  constructor(private children: Node.StatementNode[] = []) {}
 
-  Program: function(program) {
-    let body = [];
-    let node = b.program(body, program.blockParams, program.loc);
-    let i, l = program.body.length;
+  appendChild(statement: Node.StatementNode) {
+    this.children.push(statement);
+  }
+}
 
-    this.elementStack.push(node);
+export type PrintableMustache = AST.Call | Node.Mustache | Node.Block;
 
-    if (l === 0) { return this.elementStack.pop(); }
+export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
+  protected abstract acceptNode(node: AST.Node): void;
+  protected abstract acceptParam<T extends AST.Param | AST.Hash>(node: T): T;
+  protected abstract sourceForMustache(mustache: PrintableMustache): string;
 
-    for (i = 0; i < l; i++) {
-      this.acceptNode(program.body[i]);
-    }
+  protected parentStack = new Stack<Node.HasChildren>();
+
+  protected currentParent(): Node.HasChildren {
+    return this.parentStack.current;
+  }
+
+  Program(rawProgram: AST.Program): Node.Program {
+    if (rawProgram.body.length === 0) { return hbs.program(rawProgram); }
+
+    let program: AST.Program = Object.assign({}, rawProgram, { body: [] });
+    let node = hbs.program(program);
+
+    this.parentStack.push(node);
+
+    let topNode = this.elementStack.current;
+
+    rawProgram.body.forEach(n => this.acceptNode(n));
 
     // Ensure that that the element stack is balanced properly.
-    let poppedNode = this.elementStack.pop();
-    if (poppedNode !== node) {
-      throw new Error("Unclosed element `" + poppedNode.tag + "` (on line " + poppedNode.loc.start.line + ").");
+    let newTopNode = this.elementStack.current;
+    if (topNode !== newTopNode) {
+      throw new Error(`Unclosed element '${newTopNode.tag}' (on line ${newTopNode.loc.start.line}).`);
     }
 
     return node;
-  },
+  }
 
-  BlockStatement: function(block) {
-    delete block.inverseStrip;
-    delete block.openString;
-    delete block.closeStrip;
-
+  BlockStatement(block: AST.Block): Node.Block {
     if (this.tokenizer.state === 'comment') {
       this.appendToCommentData('{{' + this.sourceForMustache(block) + '}}');
       return;
@@ -39,70 +56,72 @@ export default {
       throw new Error("A block may only be used inside an HTML element or another block.");
     }
 
-    block = acceptCommonNodes(this, block);
-    let program = block.program ? this.acceptNode(block.program) : null;
-    let inverse = block.inverse ? this.acceptNode(block.inverse) : null;
+    let { path, params, hash } = this.acceptCall(block);
+    let loc = block.loc;
 
-    let node = b.block(block.path, block.params, block.hash, program, inverse, block.loc);
-    let parentProgram = this.currentElement();
-    appendChild(parentProgram, node);
-  },
+    let program = block.program && this.Program(block.program);
+    let inverse = block.inverse && this.Program(block.inverse);
 
-  MustacheStatement: function(rawMustache) {
+    let node = new Node.Block(hbs.path(path), hbs.args(params, hash), program, inverse, loc);
+
+    this.appendChild(node);
+
+    return node;
+  }
+
+  MustacheStatement(rawMustache: AST.Mustache): Node.Mustache {
     let tokenizer = this.tokenizer;
-    let { path, params, hash, escaped, loc } = rawMustache;
-    let mustache = b.mustache(path, params, hash, !escaped, loc);
 
     if (tokenizer.state === 'comment') {
-      this.appendToCommentData('{{' + this.sourceForMustache(mustache) + '}}');
+      this.appendToCommentData('{{' + this.sourceForMustache(rawMustache) + '}}');
       return;
     }
 
-    acceptCommonNodes(this, mustache);
+    let mustache = hbs.mustache(this.acceptCall(rawMustache));
 
     switch (tokenizer.state) {
       // Tag helpers
       case "tagName":
-        addElementModifier(this.currentNode, mustache);
+        this.currentNodeAs<Tag>().appendModifier(mustache);
         tokenizer.state = "beforeAttributeName";
         break;
       case "beforeAttributeName":
-        addElementModifier(this.currentNode, mustache);
+        this.currentNodeAs<Tag>().appendModifier(mustache);
         break;
       case "attributeName":
       case "afterAttributeName":
         this.beginAttributeValue(false);
         this.finishAttributeValue();
-        addElementModifier(this.currentNode, mustache);
+        this.currentNodeAs<Tag>().appendModifier(mustache);
         tokenizer.state = "beforeAttributeName";
         break;
       case "afterAttributeValueQuoted":
-        addElementModifier(this.currentNode, mustache);
+        this.currentNodeAs<Tag>().appendModifier(mustache);
         tokenizer.state = "beforeAttributeName";
         break;
 
       // Attribute values
       case "beforeAttributeValue":
-        appendDynamicAttributeValuePart(this.currentAttribute, mustache);
         tokenizer.state = 'attributeValueUnquoted';
-        break;
+      /* falls through */
       case "attributeValueDoubleQuoted":
       case "attributeValueSingleQuoted":
       case "attributeValueUnquoted":
-        appendDynamicAttributeValuePart(this.currentAttribute, mustache);
+        this.currentAttribute.pushMustache(mustache);
         break;
 
       // TODO: Only append child when the tokenizer state makes
       // sense to do so, otherwise throw an error.
       default:
-        appendChild(this.currentElement(), mustache);
+        this.appendChild(mustache);
     }
 
     return mustache;
-  },
+  }
 
-  ContentStatement: function(content) {
+  ContentStatement(content: AST.Content) {
     let changeLines = 0;
+
     if (content.rightStripped) {
       changeLines = leadingNewlineDifference(content.original, content.value);
     }
@@ -112,23 +131,24 @@ export default {
 
     this.tokenizer.tokenizePart(content.value);
     this.tokenizer.flushData();
-  },
+  }
 
-  CommentStatement: function(comment) {
-    return comment;
-  },
+  CommentStatement(comment: AST.Comment): Node.SourceComment {
+    return hbs.comment(comment);
+  }
 
-  PartialStatement: function(partial) {
-    appendChild(this.currentElement(), partial);
-    return partial;
-  },
+  PartialStatement(partial: AST.Partial): Node.Partial {
+    return this.appendChild(hbs.partial(partial));
+  }
 
-  SubExpression: function(sexpr) {
-    return acceptCommonNodes(this, sexpr);
-  },
+  SubExpression(sexpr: AST.SubExpression): Node.Sexpr {
+    let e = this.acceptCall(sexpr);
+    return hbs.sexpr(e);
+  }
 
-  PathExpression: function(path) {
-    let { original, loc } = path;
+  PathExpression(path: AST.Path): AST.Path {
+    let { original, data, loc } = path;
+    let parts;
 
     if (original.indexOf('/') !== -1) {
       // TODO add a SyntaxError with loc info
@@ -141,30 +161,63 @@ export default {
       if (original.indexOf('.') !== -1) {
         throw new Error(`Mixing '.' and '/' in paths is not supported in Glimmer; use only '.' to separate property paths: "${path.original}" on line ${loc.start.line}.`);
       }
-      path.parts = [ path.parts.join('/') ];
+      let parts = [ path.parts.join('/') ];
     }
 
-    delete path.depth;
+    return { type: 'PathExpression', data, original, parts, depth: 0, loc };
+  }
 
-    return path;
-  },
+  Hash(hash: AST.Hash): AST.Hash {
+    let pairs: AST.HashPair[] = hash.pairs.map(pair => {
+      let value = this.acceptParam(pair.value);
+      return Object.assign({}, pair, { value });
+    });
 
-  Hash: function(hash) {
-    for (let i = 0; i < hash.pairs.length; i++) {
-      this.acceptNode(hash.pairs[i].value);
+    return Object.assign({}, hash, { pairs });
+  }
+
+  StringLiteral(literal: AST.String): AST.String {
+    return literal;
+  }
+
+  BooleanLiteral(literal: AST.Boolean): AST.Boolean {
+    return literal;
+  }
+
+  NumberLiteral(literal: AST.Number): AST.Number {
+    return literal;
+  }
+
+  UndefinedLiteral(literal: AST.Undefined): AST.Undefined {
+    return literal;
+  }
+
+  NullLiteral(literal: AST.Null): AST.Null {
+    return literal;
+  }
+
+  private acceptCall<T extends AST.Call>(node: T): T {
+    let path = this.PathExpression(node.path);
+    let params: AST.Param[], hash: AST.Hash;
+
+    if (node.params) {
+      params = node.params.map(p => this.acceptParam(p));
+    } else {
+      params = [];
     }
 
-    return hash;
-  },
+    if (node.hash) {
+      hash = this.acceptParam(node.hash);
+    } else {
+      hash = { type: 'Hash', pairs: [], loc: null };
+    }
 
-  StringLiteral: function() {},
-  BooleanLiteral: function() {},
-  NumberLiteral: function() {},
-  UndefinedLiteral: function() {},
-  NullLiteral: function() {}
+    return Object.assign({}, node, { path, params, hash });
+  }
+
 };
 
-function leadingNewlineDifference(original, value) {
+function leadingNewlineDifference(original: string, value: string) {
   if (value === '') {
     // if it is empty, just return the count of newlines
     // in original
@@ -179,33 +232,3 @@ function leadingNewlineDifference(original, value) {
   return lines.length - 1;
 }
 
-function acceptCommonNodes(compiler, node) {
-  compiler.acceptNode(node.path);
-
-  if (node.params) {
-    for (let i = 0; i < node.params.length; i++) {
-      compiler.acceptNode(node.params[i]);
-    }
-  } else {
-    node.params = [];
-  }
-
-  if (node.hash) {
-    compiler.acceptNode(node.hash);
-  } else {
-    node.hash = b.hash();
-  }
-
-  return node;
-}
-
-function addElementModifier(element, mustache) {
-  let { path, params, hash, loc } = mustache;
-  let modifier = b.elementModifier(path, params, hash, loc);
-  element.modifiers.push(modifier);
-}
-
-function appendDynamicAttributeValuePart(attribute, part) {
-  attribute.isDynamic = true;
-  attribute.parts.push(part);
-}
