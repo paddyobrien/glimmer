@@ -1,46 +1,40 @@
-import { parse } from 'glimmer-syntax';
+import { AST, parse } from 'glimmer-syntax';
 
-function normalizeNode(obj) {
-  if (obj && typeof obj === 'object') {
-    let newObj;
-    if (obj.splice) {
-      newObj = new Array(obj.length);
-
-      for (let i = 0; i < obj.length; i++) {
-        newObj[i] = normalizeNode(obj[i]);
-      }
-    } else {
-      newObj = {};
-
-      for (let key in obj) {
-        if (obj.hasOwnProperty(key)) {
-          newObj[key] = normalizeNode(obj[key]);
-        }
-      }
-
-      if (newObj.type) {
-        newObj._type = newObj.type;
-        delete newObj.type;
-      }
-
-      delete newObj.loc;
-    }
-    return newObj;
-  } else {
-    return obj;
+function normalize(program: AST.Program) {
+  return {
+    body: normalizeStatements(program.body),
+    blockParams: program.blockParams,
+    loc: normalizeLoc(program._loc)
   }
 }
 
-export function astEqual(actual, expected, message?) {
+function normalizeStatements(nodes: AST.StatementNode[]) {
+  return nodes.map(normalizeStatement);
+}
+
+function normalizeStatement(node: AST.StatementNode) {
+  return node.toJSON();
+}
+
+function normalizeLoc(loc: AST.Location) {
+  return AST.jsonLocation(loc);
+}
+
+export function astEqual(actual: string | AST.Program, expected: string | AST.Program, message?: string) {
+  let actualAST: AST.Program;
+  let expectedAST: AST.Program;
+
   if (typeof actual === 'string') {
-    actual = parse(actual);
+    actualAST = parse(actual);
+  } else {
+    actualAST = actual;
   }
+
   if (typeof expected === 'string') {
-    expected = parse(expected);
+    expectedAST = parse(expected);
+  } else {
+    expectedAST = expected;
   }
 
-  actual = normalizeNode(actual);
-  expected = normalizeNode(expected);
-
-  deepEqual(actual, expected, message);
+  deepEqual(normalize(actualAST), normalize(expectedAST), message);
 }

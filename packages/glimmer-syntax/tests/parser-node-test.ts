@@ -1,91 +1,104 @@
 import { parse as handlebarsParse } from "handlebars/compiler/base";
-import { parse } from "glimmer-syntax";
-import b from "glimmer-syntax/lib/builders";
+import { parse, builders as b, AST } from "glimmer-syntax";
 import { astEqual } from "./support";
+
+QUnit.jsDump.maxDepth = 100;
 
 QUnit.module("[glimmer-syntax] Parser - AST");
 
 test("a simple piece of content", function() {
-  let t = 'some content';
-  astEqual(t, b.program([
-    b.text('some content')
-  ]));
+  let { template: t, locs: [text] } = build(['some content']);
+
+  astEqual(t, b.program().children([
+    b.text('some content').location(text)
+  ]).location(text));
 });
 
 test("allow simple AST to be passed", function() {
-  let ast = parse(handlebarsParse("simple"));
+  let { template: ast, locs: [simple] } = build(["simple"]);
 
-  astEqual(ast, b.program([
-    b.text("simple")
-  ]));
+  astEqual(ast, b.program().children([
+    b.text('simple').location(simple)
+  ]).location(simple))
 });
 
 test("allow an AST with mustaches to be passed", function() {
-  let ast = parse(handlebarsParse("<h1>some</h1> ast {{foo}}"));
+  let { template, locs: [h1, some, closeH1, ast, mustacheOpen, fooBar, mustacheClose] } =
+    build(["<h1>", "some", "</h1>", " ast ", "{{", "foo.bar", "}}"]);
 
-  astEqual(ast, b.program([
-    b.element("h1", [], [], [
-      b.text("some")
-    ]),
-    b.text(" ast "),
-    b.mustache(b.path('foo'))
-  ]));
+  astEqual(template, b.program().children([
+    b.element('h1').children([
+      b.text('some').location(some)
+    ]).location(h1, closeH1),
+
+    b.text(" ast ").location(ast),
+
+    b.mustache(b.path('foo.bar').location(fooBar)).location(mustacheOpen, mustacheClose)
+  ]).location(h1, mustacheClose))
 });
 
 test("self-closed element", function() {
-  let t = '<g />';
-  astEqual(t, b.program([
-    b.element("g")
-  ]));
+  let { template: t, locs: [g] } = build(['<g />']);
+
+  astEqual(t, b.program().children([
+    b.element("g").location(g)
+  ]).location(g));
 });
 
 test("elements can have empty attributes", function() {
-  let t = '<img id="">';
-  astEqual(t, b.program([
-    b.element("img", [
-      b.attr("id", b.text(""))
-    ])
-  ]));
+  let { template: t, locs: [openImg, idName, idValue, closeImg] } = build(['<img ', 'id=', '""', '>']);
+
+  astEqual(t, b.program().children([
+    b.element('img', [ b.attr('id', b.text('').location(idValue)).location(idName, idValue) ]).location(openImg, closeImg)
+  ]).location(openImg, closeImg))
 });
 
 test("svg content", function() {
   let t = "<svg></svg>";
   astEqual(t, b.program([
-    b.element("svg")
-  ]));
+    b.element("svg").loc([1, 0], [1, 11])
+  ]).loc([1, 0], [1, 11]));
 });
 
 test("html content with html content inline", function() {
   let t = '<div><p></p></div>';
+
   astEqual(t, b.program([
-    b.element("div", [], [], [
-      b.element("p")
-    ])
-  ]));
+    b.element("div").children([
+      b.element("p").loc([1, 5], [1, 12])
+    ]).loc([1, 0], [1, 18])
+  ]).loc([1, 0], [1, 18]));
 });
 
 test("html content with svg content inline", function() {
   let t = '<div><svg></svg></div>';
+
   astEqual(t, b.program([
-    b.element("div", [], [], [
-      b.element("svg")
-    ])
-  ]));
+    b.element("div").children([
+      b.element("svg").loc([1, 5], [1, 16])
+    ]).loc([1, 0], [1, 22])
+  ]).loc([1, 0], [1, 22]));
 });
 
 let integrationPoints = ['foreignObject', 'desc', 'title'];
 function buildIntegrationPointTest(integrationPoint){
-  return function integrationPointTest(){
+  return function integrationPointTest() {
     let t = '<svg><'+integrationPoint+'><div></div></'+integrationPoint+'></svg>';
+    let { start, end } = bounds(t);
+    let { start: foreignStart, end: foreignEnd } = bounds(t.slice(5, -6), 5);
+    let { start: divStart, end: divEnd } = bounds(t.slice(foreignStart + integrationPoint.length + 2, foreignEnd - integrationPoint.length - 3), foreignStart + integrationPoint.length + 2);
+
+    let l = integrationPoint.length;
     astEqual(t, b.program([
-      b.element("svg", [], [], [
-        b.element(integrationPoint, [], [], [
-          b.element("div")
-        ])
-      ])
-    ]));
+      b.element("svg").children([
+        b.element(integrationPoint).children([
+          b.element("div").loc([1, divStart], [1, divEnd])
+        ]).loc([1, foreignStart], [1, foreignEnd])
+      ]).loc([1, start], [1, end])
+    ]).loc([1, start], [1, end]));
   };
 }
+
 for (let i=0, length = integrationPoints.length; i<length; i++) {
   test(
     "svg content with html content inline for "+integrationPoints[i],
@@ -95,35 +108,44 @@ for (let i=0, length = integrationPoints.length; i<length; i++) {
 
 test("a piece of content with HTML", function() {
   let t = 'some <div>content</div> done';
+  let { start, end } = bounds(t);
+
   astEqual(t, b.program([
-    b.text("some "),
-    b.element("div", [], [], [
-      b.text("content")
-    ]),
-    b.text(" done")
-  ]));
+    b.text("some ").loc([1, start], [1, 5]),
+    b.element("div").children([
+      b.text("content").loc([1, 10], [1, 17])
+    ]).loc([1, 5], [1, 23]),
+    b.text(" done").loc([1, 23], [1, end])
+  ]).loc([1, start], [1, end]));
 });
 
 test("a piece of Handlebars with HTML", function() {
   let t = 'some <div>{{content}}</div> done';
+  let { start, end } = bounds(t);
+
   astEqual(t, b.program([
-    b.text("some "),
-    b.element("div", [], [], [
-      b.mustache(b.path('content'))
-    ]),
-    b.text(" done")
-  ]));
+    b.text("some ").loc([1, start], [1, 5]),
+    b.element("div").children([
+      b.mustache('content').loc([1, 10], [1, 21])
+    ]).loc([1, 5], [1, 27]),
+    b.text(" done").loc([1, 27], [1, end])
+  ]).loc([1, start], [1, end]));
 });
 
 test("Handlebars embedded in an attribute (quoted)", function() {
-  let t = 'some <div class="{{foo}}">content</div> done';
-  astEqual(t, b.program([
-    b.text("some "),
-    b.element("div", [ b.attr("class", b.concat([ b.mustache('foo') ])) ], [], [
-      b.text("content")
-    ]),
-    b.text(" done")
-  ]));
+  let { template, locs: [some, div, className, foo, content, done] } =
+    build(['some ', '<div ', 'class="', '{{foo}}', '>', 'content', '</div>', ' done']);
+
+
+
+  // let t = 'some <div class="{{foo}}">content</div> done';
+  // astEqual(t, b.program([
+  //   b.text("some "),
+  //   b.element("div", [ b.attr("class", b.concat([ b.mustache('foo') ])) ], [], [
+  //     b.text("content")
+  //   ]),
+  //   b.text(" done")
+  // ]));
 });
 
 test("Handlebars embedded in an attribute (unquoted)", function() {
@@ -403,3 +425,37 @@ test("allow {{undefined}} to be passed as a param", function() {
     b.mustache(b.path('foo'), [b.undefined()])
   ]));
 });
+
+
+function bounds(fragment: string, start = 0): { start: number, end: number } {
+  return {
+    start,
+    end: start + fragment.length
+  };
+}
+
+type Loc = AST.SourceLocation;
+
+function build(parts: [string, string, string, string, string, string, string]): { template: AST.Program, locs: [Loc, Loc, Loc, Loc, Loc, Loc, Loc] };
+function build(parts: [string, string, string, string, string, string]): { template: AST.Program, locs: [Loc, Loc, Loc, Loc, Loc, Loc] };
+function build(parts: [string, string, string, string, string]): { template: AST.Program, locs: [Loc, Loc, Loc, Loc, Loc] };
+function build(parts: [string, string, string, string]): { template: AST.Program, locs: [Loc, Loc, Loc, Loc] };
+function build(parts: [string, string, string]): { template: AST.Program, locs: [Loc, Loc, Loc] };
+function build(parts: [string, string]): { template: AST.Program, locs: [Loc, Loc] };
+function build(parts: [string]): { template: AST.Program, locs: [Loc] };
+
+function build(parts: string[]): { template: AST.Program, locs: AST.SourceLocation[] } {
+  let { template, locs } = parts.reduce(({ template, locs }, part) => {
+    let last = locs[locs.length - 1] || b.loc(b.pos(1, 0), b.pos(1, 0));
+    let next = b.loc(b.pos(1, last.end.column), b.pos(1, last.end.column + part.length));
+    return {
+      template: template + part,
+      locs: locs.concat(next)
+    };
+  }, { template: '', locs: [] } as { template: string, locs: AST.SourceLocation[] })
+
+  return {
+    template: parse(handlebarsParse(template)),
+    locs
+  };
+}

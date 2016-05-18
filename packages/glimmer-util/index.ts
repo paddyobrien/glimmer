@@ -5,8 +5,8 @@ export interface Destroyable {
 }
 
 export { getAttrNamespace } from './lib/namespaces';
-export { LITERAL, InternedString, Opaque, opaque, symbol, intern, numberKey } from './lib/platform-utils';
-export { default as assert } from './lib/assert';
+export { LITERAL, Constructor, InternedString, Option, Maybe, Opaque, opaque, symbol, intern, numberKey } from './lib/platform-utils';
+export { default as assert, assertType, unwrap } from './lib/assert';
 export { forEach, map, isArray, indexOfArray } from './lib/array-utils';
 export { default as voidMap } from './lib/void-tag-names';
 export { default as LOGGER, Logger, LogLevel } from './lib/logger';

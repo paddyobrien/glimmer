@@ -1,14 +1,14 @@
 import { parse } from "handlebars/compiler/base";
-import { Stack } from "glimmer-util";
+import { Stack, unwrap } from "glimmer-util";
 import * as Node from "./builders";
-import { Node as INode } from "./builders";
+import { Node as INode, isSourceLocation } from "./builders";
 import * as syntax from "./syntax";
 import * as HBS from "./parser/handlebars-ast"
 import EventedTokenizer from "simple-html-tokenizer/evented-tokenizer";
 import EntityParser from "simple-html-tokenizer/entity-parser";
 import namedCharRefs from "simple-html-tokenizer/html5-named-char-refs";
 import { HandlebarsNodeVisitor, PrintableMustache } from "./parser/handlebars-node-visitors";
-import { TokenizerEventHandlers } from "./parser/tokenizer-event-handlers";
+import { TokenizerEventHandlers, ElementBuilder } from "./parser/tokenizer-event-handlers";
 
 export function preprocess(html, options?): Node.Program {
   let ast = (typeof html === 'object') ? html : parse(html);
@@ -31,13 +31,11 @@ export default preprocess;
 
 const entityParser = new EntityParser(namedCharRefs);
 
-type FIXME = any;
-
 export class Parser extends HandlebarsNodeVisitor {
   private source: string[];
-  protected elementStack = new Stack<Node.Element>();
+  protected elementStack = new Stack<ElementBuilder>();
 
-  constructor(source: string, options: FIXME) {
+  constructor(source: string, options: Object) {
     super();
 
     this.tokenizer = new EventedTokenizer(this, entityParser);
@@ -55,41 +53,48 @@ export class Parser extends HandlebarsNodeVisitor {
     return this[node.type](node);
   }
 
-  currentElement(): Node.Element {
-    return this.elementStack.current;
+  currentElement(): ElementBuilder {
+    return unwrap(this.elementStack.current);
   }
 
   sourceForMustache(mustache: PrintableMustache): string {
-    let firstLine = mustache.loc.start.line - 1;
-    let lastLine = mustache.loc.end.line - 1;
-    let currentLine = firstLine - 1;
-    let firstColumn = mustache.loc.start.column + 2;
-    let lastColumn = mustache.loc.end.column - 2;
-    let string = [];
-    let line;
+    let loc = mustache.loc;
 
-    if (!this.source) {
-      return '{{' + mustache.path.original + '}}';
-    }
+    if (!isSourceLocation(loc)) {
+      throw new Error('Cannot reconstruct the source for a synthesized mustache');
+    } else {
+      let firstLine = loc.start.line - 1;
+      let lastLine = loc.end.line - 1;
+      let currentLine = firstLine - 1;
+      let firstColumn = loc.start.column + 2;
+      let lastColumn = loc.end.column - 2;
+      let string = [];
+      let line;
 
-    while (currentLine < lastLine) {
-      currentLine++;
-      line = this.source[currentLine];
-
-      if (currentLine === firstLine) {
-        if (firstLine === lastLine) {
-          string.push(line.slice(firstColumn, lastColumn));
-        } else {
-          string.push(line.slice(firstColumn));
-        }
-      } else if (currentLine === lastLine) {
-        string.push(line.slice(0, lastColumn));
-      } else {
-        string.push(line);
+      if (!this.source) {
+        return '{{' + mustache.path.original + '}}';
       }
+
+      while (currentLine < lastLine) {
+        currentLine++;
+        line = this.source[currentLine];
+
+        if (currentLine === firstLine) {
+          if (firstLine === lastLine) {
+            string.push(line.slice(firstColumn, lastColumn));
+          } else {
+            string.push(line.slice(firstColumn));
+          }
+        } else if (currentLine === lastLine) {
+          string.push(line.slice(0, lastColumn));
+        } else {
+          string.push(line);
+        }
+      }
+
+      return string.join('\n');
     }
 
-    return string.join('\n');
   }
 
 }

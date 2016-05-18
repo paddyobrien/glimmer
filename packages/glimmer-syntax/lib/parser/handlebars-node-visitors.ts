@@ -1,8 +1,9 @@
-import { Stack } from "glimmer-util";
+import { Stack, unwrap } from "glimmer-util";
 import { fromHBS as hbs, builders as b, Node as INode } from "../builders";
 import * as Node from "../builders";
-import { TokenizerEventHandlers, Attribute, Tag } from "./tokenizer-event-handlers";
+import { TokenizerEventHandlers, AttributeBuilder, ElementBuilder, TagBuilder, StartTagBuilder } from "./tokenizer-event-handlers";
 import * as AST from "./handlebars-ast";
+import { SYNTHESIZED_LOC, formatLocation, locFromHBS } from '../ast';
 
 class Fragment implements Node.HasChildren {
   constructor(private children: Node.StatementNode[] = []) {}
@@ -12,7 +13,7 @@ class Fragment implements Node.HasChildren {
   }
 }
 
-export type PrintableMustache = AST.Call | Node.Mustache | Node.Block;
+export type PrintableMustache = Node.CallNode | AST.Call | Node.Mustache | Node.Block;
 
 export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
   protected abstract acceptNode(node: AST.Node): void;
@@ -22,7 +23,7 @@ export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
   protected parentStack = new Stack<Node.HasChildren>();
 
   protected currentParent(): Node.HasChildren {
-    return this.parentStack.current;
+    return unwrap(this.parentStack.current);
   }
 
   Program(rawProgram: AST.Program): Node.Program {
@@ -40,16 +41,18 @@ export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
     // Ensure that that the element stack is balanced properly.
     let newTopNode = this.elementStack.current;
     if (topNode !== newTopNode) {
-      throw new Error(`Unclosed element '${newTopNode.tag}' (on line ${newTopNode.loc.start.line}).`);
+      let element = unwrap(newTopNode as ElementBuilder).toElementNode(this.tokenizer);
+      throw new Error(`Unclosed element '${element.tag}' (${formatLocation(element._loc)}).`);
     }
+
+    this.parentStack.pop();
 
     return node;
   }
 
-  BlockStatement(block: AST.Block): Node.Block {
+  BlockStatement(block: AST.Block) {
     if (this.tokenizer.state === 'comment') {
       this.appendToCommentData('{{' + this.sourceForMustache(block) + '}}');
-      return;
     }
 
     if (this.tokenizer.state !== 'comment' && this.tokenizer.state !== 'data' && this.tokenizer.state !== 'beforeData') {
@@ -57,24 +60,23 @@ export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
     }
 
     let { path, params, hash } = this.acceptCall(block);
-    let loc = block.loc;
 
     let program = block.program && this.Program(block.program);
     let inverse = block.inverse && this.Program(block.inverse);
 
-    let node = new Node.Block(hbs.path(path), hbs.args(params, hash), program, inverse, loc);
+    let node = new Node.Block(hbs.path(path), hbs.args(params, hash), program, inverse, false).hbs(block);
 
     this.appendChild(node);
 
     return node;
   }
 
-  MustacheStatement(rawMustache: AST.Mustache): Node.Mustache {
+  MustacheStatement(rawMustache: AST.Mustache): Node.Mustache | null {
     let tokenizer = this.tokenizer;
 
     if (tokenizer.state === 'comment') {
       this.appendToCommentData('{{' + this.sourceForMustache(rawMustache) + '}}');
-      return;
+      return null;
     }
 
     let mustache = hbs.mustache(this.acceptCall(rawMustache));
@@ -82,21 +84,21 @@ export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
     switch (tokenizer.state) {
       // Tag helpers
       case "tagName":
-        this.currentNodeAs<Tag>().appendModifier(mustache);
+        unwrap(this.currentNodeAs(StartTagBuilder)).modifier(mustache, this.tokenizer);
         tokenizer.state = "beforeAttributeName";
         break;
       case "beforeAttributeName":
-        this.currentNodeAs<Tag>().appendModifier(mustache);
+        unwrap(this.currentNodeAs(StartTagBuilder)).modifier(mustache, this.tokenizer);
         break;
       case "attributeName":
       case "afterAttributeName":
         this.beginAttributeValue(false);
         this.finishAttributeValue();
-        this.currentNodeAs<Tag>().appendModifier(mustache);
+        unwrap(this.currentNodeAs(StartTagBuilder)).modifier(mustache, this.tokenizer);
         tokenizer.state = "beforeAttributeName";
         break;
       case "afterAttributeValueQuoted":
-        this.currentNodeAs<Tag>().appendModifier(mustache);
+        unwrap(this.currentNodeAs(StartTagBuilder)).modifier(mustache, this.tokenizer);
         tokenizer.state = "beforeAttributeName";
         break;
 
@@ -107,7 +109,7 @@ export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
       case "attributeValueDoubleQuoted":
       case "attributeValueSingleQuoted":
       case "attributeValueUnquoted":
-        this.currentAttribute.pushMustache(mustache);
+        unwrap(this.currentNodeAs(StartTagBuilder)).appendToAttributeValue(mustache, this.tokenizer);
         break;
 
       // TODO: Only append child when the tokenizer state makes
@@ -147,8 +149,7 @@ export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
   }
 
   PathExpression(path: AST.Path): AST.Path {
-    let { original, data, loc } = path;
-    let parts;
+    let { original, data, parts, loc } = path;
 
     if (original.indexOf('/') !== -1) {
       // TODO add a SyntaxError with loc info
@@ -161,7 +162,7 @@ export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
       if (original.indexOf('.') !== -1) {
         throw new Error(`Mixing '.' and '/' in paths is not supported in Glimmer; use only '.' to separate property paths: "${path.original}" on line ${loc.start.line}.`);
       }
-      let parts = [ path.parts.join('/') ];
+      parts = [ path.parts.join('/') ];
     }
 
     return { type: 'PathExpression', data, original, parts, depth: 0, loc };

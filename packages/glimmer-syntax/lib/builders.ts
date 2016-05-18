@@ -1,29 +1,46 @@
 import * as HBS from './parser/handlebars-ast';
-import { Opaque, Dict } from 'glimmer-util';
+import * as Node from './builders';
+import { Opaque, Dict, Option, dict, unwrap } from 'glimmer-util';
 
 export interface Node {
   type: number;
 }
 
-export type Serializable<T> = SerializableNode<T> | SerializableValue<T>;
+export interface JSONObject {
+  [index: string]: JSON;
+}
 
-export interface SerializableValue<T> {
+export interface JSONArray extends Array<JSON> {
+  [index: number]: JSON;
+}
+
+export type JSON = JSONObject | JSONArray | number | string | boolean | null;
+
+export interface SerializableTo<T extends JSON> {
   toJSON(): T;
 }
 
-interface SerializableNode<T> extends Node, SerializableValue<T> {}
+export type Serializable = SerializableTo<JSON>;
+
+interface SerializableNode<T extends JSON> extends Node, SerializableTo<T> {}
 
 export interface LocatableNode extends Node{
-  loc: Location
+  _loc: Location
 }
 
-interface SerializedCall<T extends SerializedPath | string> {
+export interface CallNode extends LocatableNode, Serializable {
+  path: Path | Ident,
+  args: Args
+}
+
+interface SerializedCall<T extends SerializedPath | string> extends JSONArray {
   [0]: T;
   [1]: SerializedArgs;
+  [2]: SerializedLocation | null;
 }
 
 export enum Statement {
-  Program,
+  Program = 1,
   Element,
   ElementModifier,
   Attr,
@@ -34,12 +51,20 @@ export enum Statement {
   Mustache
 }
 
+export const STATEMENT_NODE: "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]";
+
+export function isStatement(value: any): value is Statement {
+  return value && value[STATEMENT_NODE];
+}
+
 export interface StatementNode extends SerializableNode<SerializedStatement>, LocatableNode {
+  "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]": boolean;
   type: Statement;
-  loc: Location;
+  _loc: Location;
 }
 
 export enum Expression {
+  Ident = 100,
   Path,
   Args,
   Concat,
@@ -55,15 +80,15 @@ export enum Expression {
 }
 
 export enum Internal {
-  Args
+  Args = 200
 }
 
 export interface ExpressionNode extends SerializableNode<SerializedExpression>, LocatableNode {
   type: Expression;
-  loc: Location;
+  _loc: Location;
 }
 
-type SerializedExpression = SerializedPath | SerializedSexpr | SerializedLiteral;
+type SerializedExpression = (SerializedPath | SerializedSexpr | SerializedLiteral) & JSON;
 
 type SerializedStatement  =
     SerializedElement
@@ -76,19 +101,62 @@ type SerializedStatement  =
   | SerializedSourceComment
   ;
 
+// Abstract Classes
+
+abstract class BuildableNode {
+  public _loc: Location = SYNTHESIZED;
+
+  location(loc: Location): this;
+  location(start: SourceLocation, end: SourceLocation): this;
+  location(start: Position, end: Position): this;
+
+  location(start, end?): this {
+    if (arguments.length === 2) {
+      if (start instanceof SourceLocation) {
+        this._loc = SourceLocation.build(start.start, end.end);
+      } else {
+        this._loc = SourceLocation.build(start, end);
+      }
+    } else {
+      this._loc = start;
+    }
+
+    return this;
+  }
+
+  loc(start: [number, number], end: [number, number], source?: string): this {
+    this._loc = new SourceLocation(source || SYNTHESIZED_SOURCE, new Position(start[0], start[1]), new Position(end[0], end[1]));
+    return this;
+  }
+
+  hbs(node: HBS.Node): this {
+    this._loc = locFromHBS(node.loc);
+    return this;
+  }
+}
+
 // Statements
 
 type FIXME = any;
 
 type SerializedMustache = SerializedCall<SerializedPath>;
 
-export class Mustache implements StatementNode {
-  static build(path: string, positional: ExpressionNode[], named: Dict<ExpressionNode>, trusting: boolean, loc: Location) {
+export class Mustache extends BuildableNode implements StatementNode, CallNode {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(rawPath: string | Path, positional: ExpressionNode[] = [], named: Dict<ExpressionNode> = dict<ExpressionNode>(), trusting: boolean = false) {
+    let path: Path;
+
+    if (typeof rawPath === 'string') {
+      path = Path.build(rawPath);
+    } else {
+      path = rawPath;
+    }
+
     return new Mustache(
-      Path.build(path, null),
-      Args.build(positional, named, null),
-      trusting,
-      loc
+      path,
+      Args.build(positional, named),
+      trusting
     )
   }
 
@@ -97,7 +165,7 @@ export class Mustache implements StatementNode {
     let args = Args.fromHBS(node.params, node.hash);
     let trusting = !node.escaped;
 
-    return new Mustache(path, args, !node.escaped, node.loc);
+    return new Mustache(path, args, !node.escaped).hbs(node);
   }
 
   public type = Statement.Mustache;
@@ -105,29 +173,32 @@ export class Mustache implements StatementNode {
   constructor(
     public path: Path,
     public args: Args,
-    public trusting: boolean,
-    public loc: Location
+    public trusting: boolean
   ) {
+    super();
   }
 
   toJSON(): SerializedMustache {
-    return toJSON(
-      this.path,
-      this.args.withInternal([ Literal.build(this.trusting, null) ])
-    );
+    return [
+      this.path.toJSON(),
+      this.args.withInternal([ literal(this.trusting) ]).toJSON(),
+      jsonLocation(this._loc)
+    ];
   }
 }
 
 export type SerializedBlock = SerializedCall<"block">;
 
-export class Block implements StatementNode, SerializableNode<SerializedBlock> {
-  static build(path: string, positional: ExpressionNode[], named: Dict<ExpressionNode>, program: Program, inverse: Program, loc: Location) {
+export class Block extends BuildableNode implements StatementNode, CallNode, SerializableNode<SerializedBlock> {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(path: string, positional: ExpressionNode[], named: Dict<ExpressionNode>, program: Program, inverse: Program) {
     return new Block(
-      Path.build(path, null),
-      Args.build(positional, named, null),
+      Path.build(path),
+      Args.build(positional, named),
       program,
       inverse,
-      loc
+      false
     );
   }
 
@@ -137,7 +208,7 @@ export class Block implements StatementNode, SerializableNode<SerializedBlock> {
     let program = Program.fromHBS(node.program);
     let inverse = Program.fromHBS(node.inverse);
 
-    return new Block(path, args, program, inverse, node.loc);
+    return new Block(path, args, program, inverse, !!node.chained).hbs(node);
   }
 
   public type = Statement.Block;
@@ -147,72 +218,78 @@ export class Block implements StatementNode, SerializableNode<SerializedBlock> {
     public args: Args,
     public program: Program,
     public inverse: Program,
-    public loc: Location
+    public chained: boolean
   ) {
+    super();
   }
 
   toJSON(): SerializedBlock {
-    return toJSON(
+    return [
       "block" as "block",
-      this.args.withInternal([ this.program, this.inverse ])
-    );
+      this.args.withInternal([ this.program, this.inverse ]).toJSON(),
+      jsonLocation(this._loc)
+    ];
   }
 }
 
 export type SerializedPartial = SerializedCall<"partial">;
 
-export class Partial implements StatementNode, SerializableNode<SerializedPartial> {
-  static build(name: string, args: Args, indent: number, loc: Location) {
-    return new Partial(name, args, indent, loc);
+export class Partial extends BuildableNode implements StatementNode, CallNode, SerializableNode<SerializedPartial> {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(name: string, args: Args, indent: number) {
+    return new Partial(Path.build(name), args, indent);
   }
 
   static fromHBS(node: HBS.Partial) {
     let args = Args.fromHBS(node.params, node.hash);
-    return new Partial(node.name, args, node.indent, node.loc);
+    return new Partial(Path.fromHBS(node.name), args, node.indent).hbs(node);
   }
 
   public type = Statement.Partial;
 
   constructor(
-    public name: string,
+    public path: Path,
     public args: Args,
-    public indent: number,
-    public loc: Location
+    public indent: number
   ) {
+    super();
   }
 
   toJSON(): SerializedPartial {
-    return toJSON(
-      "partial" as "partial",
-      this.args.withInternal([literal(this.name), literal(this.indent)])
-    );
+    return [
+      "partial",
+      this.args.withInternal(InternalArgs.build([this.path, literal(this.indent)])).toJSON(),
+      jsonLocation(this._loc)
+    ];
   }
 }
 
 export type SerializedSourceComment = SerializedCall<"comment">;
 
-export class SourceComment implements StatementNode, SerializableNode<SerializedSourceComment> {
-  static build(value: string, loc: Location): SourceComment {
-    return new SourceComment(value, loc);
+export class SourceComment extends BuildableNode implements StatementNode, SerializableNode<SerializedSourceComment> {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(value: string): SourceComment {
+    return new SourceComment(value);
   }
 
   static fromHBS(node: HBS.Comment): SourceComment {
-    return new SourceComment(node.value, node.loc);
+    return new SourceComment(node.value).hbs(node);
   }
 
   public type = Statement.Comment;
 
-  constructor(
-    public value: string,
-    public loc: Location
-  ) {
+  constructor(public value: string) {
+    super();
   }
 
   toJSON(): SerializedSourceComment {
-    return toJSON(
-      "comment" as "comment",
-      Args.internal([literal(this.value)])
-    );
+    return [
+      "comment",
+      Args.internal(internal(this.value)).toJSON(),
+      jsonLocation(this._loc)
+    ];
   }
 }
 
@@ -222,11 +299,18 @@ export interface HasChildren {
   appendChild(statement: StatementNode);
 }
 
-export type SerializedElement = SerializedCall<"element">;
+interface SerializedElement extends JSONArray {
+  [0]: "element";
+  [1]: SerializedArgs;
+  [2]: SerializedStatement[];
+  [3]: Option<SerializedLocation>
+}
 
-export class Element implements StatementNode, HasChildren {
-  static build(tag: string, attributes: Attr[], blockParams: string[], modifiers: Mustache[], children: StatementNode[], loc: Location) {
-    return new Element(tag, attributes, blockParams, modifiers, children, loc);
+export class Element extends BuildableNode implements StatementNode, HasChildren {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(tag: string, attributes: Attr[] = [], blockParams: string[] = [], modifiers: Mustache[] = [], children: StatementNode[] = []): Element {
+    return new Element(tag, attributes, blockParams, modifiers, children);
   }
 
   public type = Statement.Element;
@@ -236,20 +320,27 @@ export class Element implements StatementNode, HasChildren {
     public attributes: Attr[],
     public blockParams: string[],
     public modifiers: Mustache[],
-    public children: StatementNode[], // TODO: break into Program
-    public loc: Location
+    public _children: StatementNode[] // TODO: break into Program
   ) {
+    super();
+  }
+
+  children(nodes: StatementNode[]): this {
+    this._children = nodes;
+    return this;
   }
 
   toJSON(): SerializedElement {
-    return toJSON(
-      "element" as "element",
-      Args.internal([literal(this.tag), InternalArgs.build(this.attributes)])
-    )
+    return [
+      "element",
+      Args.internal([literal(this.tag), InternalArgs.build(this.attributes)]).toJSON(),
+      this._children.map(c => c.toJSON()),
+      jsonLocation(this._loc)
+    ];
   }
 
   appendChild(statement: StatementNode) {
-    this.children.push(statement);
+    this._children.push(statement);
   }
 
   appendModifier(modifier: Mustache) {
@@ -259,126 +350,157 @@ export class Element implements StatementNode, HasChildren {
 
 export type SerializedAttr = SerializedCall<"attribute">;
 
-export class Attr implements StatementNode, SerializableNode<SerializedAttr> {
-  static build(name: string, value: ExpressionNode & SerializableNode<Opaque>, loc: Location): Attr {
-    return new Attr(name, value, loc);
+export type AttrValue = Text | Concat | Mustache;
+
+export class Attr extends BuildableNode implements StatementNode, SerializableNode<SerializedAttr> {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(name: string, value: AttrValue & Serializable): Attr {
+    return new Attr(name, value);
   }
 
   public type = Statement.Attr;
 
   constructor(
     public name: string,
-    public value: ExpressionNode & SerializableNode<Opaque>,
-    public loc: Location
+    public value: AttrValue & Serializable
   ) {
+    super();
   }
 
   toJSON(): SerializedAttr {
-    return toJSON(
-      "attribute" as "attribute",
-      Args.internal([ literal(this.name), this.value ])
-    );
+    return [
+      "attribute",
+      Args.internal([ literal(this.name), this.value ]).toJSON(),
+      jsonLocation(this._loc)
+    ];
   }
 }
 
 export type SerializedText = SerializedCall<"text">;
 
-export class Text implements StatementNode {
-  static build(chars: string, loc: Location): Text {
-    return new Text(chars, loc);
+export class Text extends BuildableNode implements StatementNode {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(chars: string): Text {
+    return new Text(chars);
   }
 
   public type = Statement.Text;
 
-  constructor(
-    public chars: string,
-    public loc: Location
-  ) {
+  constructor(public chars: string) {
+    super();
   }
 
   toJSON(): SerializedText {
-    return toJSON(
-      "text" as "text",
-      Args.internal([literal(this.chars)])
-    );
+    return [
+      "text",
+      Args.internal(internal(this.chars)).toJSON(),
+      jsonLocation(this._loc)
+    ];
   }
 }
 
 export type SerializedComment = SerializedCall<"comment">;
 
-export class Comment implements StatementNode {
-  static build(value: string, loc: Location): Comment {
-    return new Comment(value, loc);
+export class Comment extends BuildableNode implements StatementNode {
+  public "STATEMENT [0252bef3-e03e-4bef-80eb-5851a351cbc4]" = true;
+
+  static build(value: string): Comment {
+    return new Comment(value);
   }
 
   public type = Statement.Comment;
 
-  constructor(
-    public value: string,
-    public loc: Location
-  ) {
+  constructor(public value: string) {
+    super()
   }
 
   toJSON(): SerializedComment {
-    return toJSON(
-      "comment" as "comment",
-      Args.internal([literal(this.value)])
-    );
+    return [
+      "comment",
+      Args.internal([literal(this.value)]).toJSON(),
+      jsonLocation(this._loc)
+    ];
   }
 }
 
-export class Concat {
+export class Concat extends BuildableNode implements Serializable {
   static build(parts: StatementNode[]): Concat {
     return new Concat(parts);
   }
 
   public type = Expression.Concat;
 
-  constructor(public parts: StatementNode[]) {}
+  constructor(public parts: StatementNode[]) {
+    super();
+  }
+
+  toJSON(): SerializedStatement[] {
+    return this.parts.map(toJSON);
+  }
 }
 
 // Expressions
 
 export type SerializedSexpr = SerializedCall<SerializedPath>;
 
-export class Sexpr implements ExpressionNode, SerializableNode<SerializedSexpr> {
-  static build(path: string, positional: ExpressionNode[], named: Dict<ExpressionNode>, loc: Location) {
+export class Sexpr extends BuildableNode implements ExpressionNode, CallNode, SerializableNode<SerializedSexpr> {
+  static build(path: string, positional: ExpressionNode[], named: Dict<ExpressionNode>): Sexpr {
     return new Sexpr(
-      Path.build(path, null),
-      Args.build(positional, named, null),
-      loc
+      Path.build(path),
+      Args.build(positional, named)
     );
   }
 
   static fromHBS(node: HBS.SubExpression): Sexpr {
     let path = Path.fromHBS(node.path);
     let args = Args.fromHBS(node.params, node.hash);
-    return new Sexpr(path, args, node.loc);
+    return new Sexpr(path, args).hbs(node);
   }
 
   type = Expression.Sexpr;
 
   constructor(
     public path: Path,
-    public args: Args,
-    public loc: Location
+    public args: Args
   ) {
+    super();
   }
 
   toJSON(): SerializedSexpr {
-    return toJSON(this.path, this.args);
+    return [ toJSON(this.path), toJSON(this.args), jsonLocation(this._loc) ];
+  }
+}
+
+export type SerializedIdent = string;
+
+export class Ident implements SerializableNode<SerializedIdent> {
+  static build(original: string) {
+
+  }
+
+  public type = Expression.Ident;
+  public original: string;
+
+  constructor(public path: string) {
+    this.original = path;
+  }
+
+  toJSON(): SerializedIdent {
+    return this.path;
   }
 }
 
 export type SerializedPath = string[];
 
-export class Path implements ExpressionNode, SerializableNode<SerializedPath> {
-  static build(original: string, loc: Location) {
-    return new Path(original, original.split('.'), false, loc);
+export class Path extends BuildableNode implements ExpressionNode, SerializableNode<SerializedPath> {
+  static build(original: string): Path {
+    return new Path(original, original.split('.'), false);
   }
 
   static fromHBS(path: HBS.Path): Path {
-    return new Path(path.original, path.parts, path.data, path.loc);
+    return new Path(path.original, path.parts, path.data).hbs(path);
   }
 
   public type = Expression.Path;
@@ -386,9 +508,9 @@ export class Path implements ExpressionNode, SerializableNode<SerializedPath> {
   constructor(
     public original: string,
     public parts: string[],
-    public data: boolean,
-    public loc: Location
+    public data: boolean
   ) {
+    super();
   }
 
   toJSON(): SerializedPath {
@@ -397,48 +519,41 @@ export class Path implements ExpressionNode, SerializableNode<SerializedPath> {
 }
 
 type LiteralType = number | boolean | string | null | undefined;
+type SerializedLiteralType = number | boolean | string | null | ['literal', 'undefined'];
 
-type SerializedLiteralValue<T extends LiteralType> = T;
-export type SerializedLiteral = SerializedLiteralValue<LiteralType>;
+type SerializedLiteralValue<T extends SerializedLiteralType> = T;
+export type SerializedLiteral = SerializedLiteralValue<SerializedLiteralType>;
 
-export abstract class Literal<T extends LiteralType> implements ExpressionNode, SerializableNode<SerializedLiteralValue<T>> {
-  static fromHBS(node: HBS.Literal): Literal<LiteralType> {
+abstract class Literal<T extends SerializedLiteralType> extends BuildableNode {
+  static fromHBS(node: HBS.Literal): Literal<SerializedLiteralType> {
     if (HBS.isString(node)) {
-      return new String(node.value, node.loc);
+      return new String(node.value).hbs(node);
     } else if (HBS.isBoolean(node)) {
-      return new Boolean(node.value, node.loc);
+      return new Boolean(node.value).hbs(node);
     } else if (HBS.isNumber(node)) {
-      return new Number(node.value, node.loc);
+      return new Number(node.value).hbs(node);
     } else if (HBS.isNull(node)) {
-      return new Null(node.value, node.loc);
+      return new Null(node.value).hbs(node);
     } else if (HBS.isUndefined(node)) {
-      return new Undefined(node.value, node.loc);
+      return new Undefined().hbs(node);
+    } else {
+      throw new Error("BUG: Passed non-primitive to Literal.fromHBS");
     }
   }
 
-  static build(value: string, loc: Location): String;
-  static build(value: number, loc: Location): Number;
-  static build(value: boolean, loc: Location): Boolean;
-  static build(value: null, loc: Location): Null;
-  static build(value: undefined, loc: Location): Undefined;
+  type: Expression;
 
-  static build(value, loc): Literal<LiteralType> {
-    if (typeof value === 'string') {
-      return new String(value, loc);
-    } else if (typeof value === 'boolean') {
-      return new Boolean(value, loc);
-    } else if (typeof value === 'number') {
-      return new Number(value, loc);
-    } else if (value === null) {
-      return new Null(null, loc);
-    } else if (value === undefined) {
-      return new Undefined(undefined, loc);
-    }
-  }
+  abstract toJSON(): T;
+}
 
+type AnyLiteral = Literal<SerializedLiteralType>;
+
+export abstract class ValueLiteral<T extends SerializedLiteralType> extends BuildableNode implements ExpressionNode, SerializableTo<SerializedLiteralValue<T>> {
   public type: Expression;
 
-  constructor(public value: T, public loc: Location) {}
+  constructor(public value: T) {
+    super();
+  }
 
   toJSON(): SerializedLiteralValue<T> {
     return this.value;
@@ -451,55 +566,77 @@ function literal(value: boolean): Boolean;
 function literal(value: null): Null;
 function literal(value: undefined): Undefined;
 
-function literal(value: LiteralType) {
-  return Literal.build(value, SYNTHESIZED);
+function literal(value: LiteralType): AnyLiteral {
+  if (typeof value === 'string') {
+    return new String(value);
+  } else if (typeof value === 'boolean') {
+    return new Boolean(value);
+  } else if (typeof value === 'number') {
+    return new Number(value);
+  } else if (value === null) {
+    return new Null(null);
+  } else if (value === undefined) {
+    return new Undefined();
+  } else {
+    throw new Error("BUG: passed non-primitive to Literal.build");
+  }
 }
 
 export type SerializedString = SerializedLiteralValue<string>;
 
-export class String extends Literal<string> {
+export class String extends ValueLiteral<string> {
   public type = Expression.String;
 }
 
 export type SerializedBoolean = SerializedLiteralValue<boolean>;
 
-export class Boolean extends Literal<boolean> {
+export class Boolean extends ValueLiteral<boolean> {
   public type = Expression.Boolean;
 }
 
 export type SerializedNumber = SerializedLiteralValue<number>;
 
-export class Number extends Literal<number> {
+export class Number extends ValueLiteral<number> {
   public type = Expression.Number;
 }
 
 export type SerializedNull = SerializedLiteralValue<null>;
 
-export class Null extends Literal<null> {
+export class Null extends ValueLiteral<null> {
   public type = Expression.Null;
 }
 
-export type SerializedUndefined = SerializedLiteralValue<undefined>;
+export type SerializedUndefined = ['literal', 'undefined'];
 
-export class Undefined extends Literal<undefined> {
+export class Undefined extends BuildableNode implements Literal<SerializedUndefined> {
   public type = Expression.Undefined;
+
+  toJSON(): SerializedUndefined {
+    return ['literal', 'undefined'];
+  }
 }
 
 // Miscellaneous
 
-export type SerializedArgs = [SerializedPositional, SerializedNamed];
+export type SerializedArgs = [SerializedPositional, SerializedNamed, SerializedInternal];
 
 export class Args implements SerializableNode<SerializedArgs> {
-  static build(positional: ExpressionNode[], named: Dict<ExpressionNode>, internal: SerializableNode<Opaque>[]): Args {
-    return new Args(new Positional(positional), Named.build(named), new InternalArgs(internal));
+  static build(positional: ExpressionNode[], named: Dict<ExpressionNode>, internal?: Serializable[]): Args {
+    return new Args(new Positional(positional), Named.build(named), new InternalArgs(internal || []));
   }
 
-  static internal(internal: SerializableNode<Opaque>[]): Args {
-    return new Args(null, null, new InternalArgs(internal));
+  static internal(internal: InternalArgs): Args;
+  static internal(internal: Serializable[]): Args;
+  static internal(internal): Args {
+    if (Array.isArray(internal)) {
+      return new Args(new Positional([]), new Named([]), new InternalArgs(internal));
+    } else {
+      return new Args(new Positional([]), new Named([]), internal);
+    }
   }
 
-  static fromHBS(params: HBS.Param[], hash: HBS.Hash): Args {
-    return new Args(Positional.fromHBS(params), Named.fromHBS(hash), null);
+  static fromHBS(params?: HBS.Param[], hash?: HBS.Hash): Args {
+    return new Args(Positional.fromHBS(params), Named.fromHBS(hash), InternalArgs.empty());
   }
 
   public type = Expression.Args;
@@ -511,36 +648,58 @@ export class Args implements SerializableNode<SerializedArgs> {
   ) {
   }
 
-  withInternal(internal: SerializableNode<Opaque>[]) {
-    return new Args(this.positional, this.named, new InternalArgs(internal));
+  withInternal(internal: InternalArgs): Args;
+  withInternal(internal: Serializable[]): Args;
+
+  withInternal(internal): Args {
+    if (Array.isArray(internal)) {
+      return new Args(this.positional, this.named, new InternalArgs(internal));
+    } else {
+      return new Args(this.positional, this.named, internal);
+    }
+
   }
 
   toJSON(): SerializedArgs {
-    return toJSON(this.positional, this.named, this.internal);
+    return [ this.positional.toJSON(), this.named.toJSON(), toJSON(this.internal) ];
   }
 }
 
-type SerializedInternal = FIXME[];
+type SerializedInternal = JSONArray | null;
 
-export class InternalArgs implements SerializableNode<SerializedPositional> {
-  static build(params: SerializableNode<FIXME>[]) {
+export class InternalArgs implements SerializableNode<SerializedInternal> {
+  static build(params: Serializable[]) {
     return new InternalArgs(params);
+  }
+
+  static empty(): InternalArgs {
+    return new InternalArgs([]);
   }
 
   public type = Internal.Args;
 
-  constructor(public params: SerializableNode<FIXME>[]) {}
+  constructor(public params: Serializable[]) {}
 
-  toJSON(): SerializedPositional {
-    return this.params.map(e => toJSON(e));
+  toJSON(): SerializedInternal {
+    return this.params.map(e => {
+      return toJSON(e);
+    });
   }
+}
+
+function internal(...args: LiteralType[]): InternalArgs {
+  return new InternalArgs(args.map<AnyLiteral>(literal));
 }
 
 type SerializedPositional = SerializedExpression[];
 
 export class Positional implements SerializableNode<SerializedPositional> {
-  static fromHBS(params: HBS.Param[]) {
-    return new Positional(params.map(paramToExpr));
+  static fromHBS(params?: HBS.Param[]) {
+    if (!params) {
+      return new Positional([]);
+    } else {
+      return new Positional(params.map(paramToExpr));
+    }
   }
 
   public type = Expression.Positional;
@@ -557,18 +716,22 @@ export type SerializedNamed = [string[], SerializedExpression[]];
 export class Named implements SerializableNode<SerializedNamed> {
   static build(object: Dict<ExpressionNode>): Named {
     let keys = Object.keys(object);
-    return new Named(keys.map(k => Pair.build(k, keys[k], null)));
+    return new Named(keys.map(k => Pair.build(k, keys[k])));
   }
 
-  static fromHBS(hash: HBS.Hash) {
-    return new Named(hash.pairs.map(Pair.fromHBS));
+  static fromHBS(hash?: HBS.Hash): Named {
+    if (!hash) {
+      return new Named([]);
+    } else {
+      return new Named(hash.pairs.map(Pair.fromHBS));
+    }
   }
 
   public type = Expression.Named;
 
   constructor(public pairs: Pair[]) {}
 
-  toJSON(): [string[], FIXME[]] {
+  toJSON(): SerializedNamed {
     let keys = [];
     let values = [];
 
@@ -583,35 +746,35 @@ export class Named implements SerializableNode<SerializedNamed> {
 
 type RawPair = [string, ExpressionNode];
 
-export class Pair implements LocatableNode {
-  static build(key: string, value: ExpressionNode, loc: Location): Pair {
-    return new Pair(key, value, loc);
+export class Pair extends BuildableNode implements LocatableNode {
+  static build(key: string, value: ExpressionNode): Pair {
+    return new Pair(key, value);
   }
 
   static fromHBS(pair: HBS.HashPair): Pair {
-    return new Pair(pair.key, paramToExpr(pair.value), pair.loc);
+    return new Pair(pair.key, paramToExpr(pair.value)).hbs(pair);
   }
 
   public type = Expression.Pair;
 
   constructor(
     public key: string,
-    public value: ExpressionNode,
-    public loc: Location
+    public value: ExpressionNode
   ) {
+    super();
   }
 }
 
 export type SerializedProgram = [string[], SerializedStatement[]];
 
-export class Program implements SerializableNode<SerializedProgram> {
-  static build(body: StatementNode[], blockParams: string[], loc: Location): Program {
-    return new Program(body, blockParams, loc);
+export class Program extends BuildableNode implements SerializableNode<SerializedProgram> {
+  static build(blockParams: string[] = []): Program {
+    return new Program([], blockParams, false);
   }
 
   static fromHBS(node: HBS.Program): Program {
     let body = node.body.map(stmtToStatement);
-    return new Program(body, node.blockParams, node.loc);
+    return new Program(body, node.blockParams || [], !!node.chained).hbs(node);
   }
 
   public type = Statement.Program;
@@ -619,8 +782,14 @@ export class Program implements SerializableNode<SerializedProgram> {
   constructor(
     public body: StatementNode[],
     public blockParams: string[],
-    public loc: Location
+    public chained: boolean
   ) {
+    super();
+  }
+
+  children(nodes: StatementNode[]): this {
+    this.body = nodes;
+    return this;
   }
 
   toJSON(): SerializedProgram {
@@ -639,7 +808,11 @@ function buildSource(source?) {
 export type RawPosition = { line: number, column: number };
 
 export class Position {
-  static build({ line, column }: RawPosition) {
+  static build(line: number, column: number) {
+    return new Position(line, column);
+  }
+
+  static fromHBS({ line, column }: HBS.Position) {
     return new Position(line, column);
   }
 
@@ -648,15 +821,28 @@ export class Position {
     public column: number
   ) {
   }
+
+  toJSON(): RawPosition {
+    return { line: this.line, column: this.column };
+  }
 }
 
-function paramToExpr(node: HBS.Param): ExpressionNode {
-  if (HBS.isLiteral(node)) {
-    return Literal.fromHBS(node);
-  } else if (HBS.isPath(node)) {
-    return Path.fromHBS(node);
-  } else if (HBS.isSubExpression(node)) {
-    return Sexpr.fromHBS(node);
+function paramToExpr(ast: HBS.Param | Node.Sexpr): ExpressionNode {
+  if (ast.type === Node.Expression.Sexpr) {
+    return ast as Node.Sexpr;
+  } else {
+    let node = ast as HBS.Param;
+
+    if (HBS.isLiteral(node)) {
+      return Literal.fromHBS(node);
+    } else if (HBS.isPath(node)) {
+      return Path.fromHBS(node);
+    } else if (HBS.isSubExpression(node)) {
+      return Sexpr.fromHBS(node);
+    } else {
+      // TO ASK TS: is there a way to tell TS that this is exhaustive?
+      throw new Error("BUG: passed non-param to paramToExpr");
+    }
   }
 }
 
@@ -669,15 +855,26 @@ function stmtToStatement(node: HBS.Statement): StatementNode {
     return Partial.fromHBS(node);
   } else if (HBS.isComment(node)) {
     return SourceComment.fromHBS(node);
+  } else {
+    // TO ASK TS: is there a way to tell TS that this is exhaustive?
+    throw new Error("BUG: passed non-statement to stmtToStatement");
   }
 }
 
 function locForRange(nodes: HBS.Node[]): Location {
-  let start = nodes[0].loc;
-  let end = nodes[nodes.length - 1].loc;
-  let source = start.source;
+  let first = nodes[0];
+  let last = nodes[nodes.length - 1];
 
-  return new Location(source, start.start, end.end);
+  if (first && first.loc && last && last.loc) {
+    let start = first.loc;
+    let end = last.loc;
+    let source = start.source;
+
+    return SourceLocation.build(start.start, end.end, source);
+  } else {
+    return SYNTHESIZED as Location;
+  }
+
 }
 
 // export function buildPosition(line: number, column: number): Position {
@@ -697,20 +894,86 @@ export interface HandlebarsLocation {
   end: Position;
 }
 
-export class Location {
-  static build(start: RawPosition, end: RawPosition, source: string = null): Location {
-    return new Location(source, start && Position.build(start), end && Position.build(end));
+export class SourceLocation {
+  static build(start: RawPosition, end: RawPosition, source: SourceFile = SYNTHESIZED_SOURCE): SourceLocation {
+    return new SourceLocation(source, start && Position.fromHBS(start), end && Position.fromHBS(end));
   }
 
   constructor(
-    public source: string,
+    public source: SourceFile,
     public start: Position,
     public end: Position
   ) {
   }
+
+  toJSON() {
+    return jsonLocation(this);
+  }
 }
 
-export const SYNTHESIZED: Location = null;
+export const SYNTHESIZED_SOURCE: SourceFile = "SYNTHESIZED_SOURCE [33851ac4-4863-4811-b841-e7aa12becd89]";
+export const SYNTHESIZED: Location = "SYNTHESIZED [1098c603-b6f5-46a2-8171-56f0b2572382]";
+export const UNNEEDED: Location = "UNNEEDED [31eb8112-8690-4721-93d0-ccd3d24496d2]";
+
+export type HbsToLoc = SourceLocation | Location | HBS.Location | null | undefined;
+
+export function locFromHBS(loc: HbsToLoc): Location {
+  if (loc === null || loc === undefined || loc === SYNTHESIZED) {
+    return SYNTHESIZED as Location;
+  } else if (loc instanceof SourceLocation || loc === UNNEEDED) {
+    return loc as Location;
+  } else if (loc && loc['start'] && loc['end']) {
+    let l = loc as HBS.Location;
+    return SourceLocation.build(l.start, l.end, l.source);
+  } else {
+    throw new Error(`BUG: Passed ${loc} to locFromHBS instead of a location object`);
+  }
+}
+
+export type SourceFile =
+    string
+  | "SYNTHESIZED_SOURCE [33851ac4-4863-4811-b841-e7aa12becd89]"
+  ;
+
+export type Location =
+    SourceLocation
+  | "SYNTHESIZED [1098c603-b6f5-46a2-8171-56f0b2572382]"
+  | "UNNEEDED [31eb8112-8690-4721-93d0-ccd3d24496d2]"
+  ;
+
+export function isSourceLocation(l: any): l is SourceLocation {
+  return l instanceof SourceLocation;
+}
+
+interface SerializedLocation extends JSONObject {
+  source: string | null;
+  start: { line: number, column: number },
+  end: { line: number, column: number }
+}
+
+export function jsonLocation(location: Location): Option<SerializedLocation> {
+  if (location === SYNTHESIZED || location === UNNEEDED) {
+    return null;
+  } else {
+    let { source, start, end } = location as SourceLocation;
+    return {
+      source: source === SYNTHESIZED_SOURCE ? null : source,
+      start: start.toJSON(),
+      end: end.toJSON()
+    };
+  }
+}
+
+export function formatLocation(location: Location): string {
+  if (location === SYNTHESIZED) {
+    return "(synthesized syntax)";
+  } else if (location === UNNEEDED) {
+    throw new Error("Don't try to print AST nodes that don't represent contiguous spans");
+  } else {
+    let l = location as SourceLocation;
+    return `${l.start.line}:${l.start.column} at ${l.source}`;
+  }
+}
 
 export type DOMNode = Text | Element | Comment;
 
@@ -725,21 +988,13 @@ export function isDOMNode(node: Node): node is DOMNode {
 //   toJSON(): any;
 // }
 
+function toJSON(arg: null): null;
+function toJSON<T extends JSON>(arg: SerializableTo<T>): T;
 
-function toJSON<T>(t: Serializable<T>): [T];
-function toJSON<T extends string>(t: T): [T];
-function toJSON<T, U>(t: Serializable<T>, u: Serializable<U>): [T, U];
-function toJSON<T extends string, U>(t: T, u: Serializable<U>): [T, U];
-function toJSON<T, U, V>(t: Serializable<T>, u: Serializable<U>, v: Serializable<V>): [T, U, V];
-function toJSON<T extends string, U, V>(t: T, u: Serializable<U>, v: Serializable<V>): [T, U, V];
-function toJSON<T, U, V, W>(t: Serializable<T>, u: Serializable<U>, v: Serializable<V>, w: Serializable<W>): [T, U, V, W];
-function toJSON<T extends string, U, V, W>(t: string, u: Serializable<U>, v: Serializable<V>, w: Serializable<W>): [T, U, V, W];
-
-function toJSON(...args) {
-  return args.map(a => {
-    return a && (typeof a === 'string' ? a : a.toJSON());
-  });
+function toJSON(arg) {
+  return arg ? arg.toJSON() : null;
 }
+
 
 // function buildLoc(loc: Location): Location;
 // function buildLoc(startLine, startColumn, endLine?, endColumn?, source?): Location;
@@ -778,16 +1033,16 @@ export let builders = {
   text: Text.build,
   sexpr: Sexpr.build,
   path: Path.build,
-  string: String.build,
-  boolean: Boolean.build,
-  number: Number.build,
-  undefined: Undefined.build,
-  null: Null.build,
+  string: literal,
+  boolean: literal,
+  number: literal,
+  undefined: () => literal(undefined),
+  null: () => literal(null),
   concat: Concat.build,
   hash: Named.build,
   pair: Pair.build,
   program: Program.build,
-  loc: Location.build,
+  loc: SourceLocation.build,
   pos: Position.build
 };
 
@@ -799,12 +1054,13 @@ export let fromHBS = {
   comment: SourceComment.fromHBS,
   sexpr: Sexpr.fromHBS,
   path: Path.fromHBS,
-  string: String.fromHBS,
-  boolean: Boolean.fromHBS,
-  number: Number.fromHBS,
-  undefined: Undefined.fromHBS,
-  null: Null.fromHBS,
+  string: Literal.fromHBS,
+  boolean: Literal.fromHBS,
+  number: Literal.fromHBS,
+  undefined: Literal.fromHBS,
+  null: Literal.fromHBS,
   hash: Named.fromHBS,
   pair: Pair.fromHBS,
   program: Program.fromHBS,
+  position: Position.fromHBS
 };

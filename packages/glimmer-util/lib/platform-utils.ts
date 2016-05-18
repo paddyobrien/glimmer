@@ -1,3 +1,7 @@
+export interface Constructor<T> {
+  new(...args: any[]): T;
+}
+
 interface InternedStringMarker {
   "d0850007-25c2-47d8-bb63-c4054016d539": boolean;
 }
@@ -12,6 +16,9 @@ export function intern(str: string): InternedString {
 }
 
 export type Opaque = {} | void;
+
+export type Option<T> = T | null;
+export type Maybe<T> = Option<T> | undefined;
 
 export function opaque(value: Opaque): Opaque {
   return value;

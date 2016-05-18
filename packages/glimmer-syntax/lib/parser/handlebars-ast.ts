@@ -1,4 +1,4 @@
-import { Opaque } from 'glimmer-util';
+import { Opaque, Option } from 'glimmer-util';
 
 export interface Position {
   line: number;
@@ -44,7 +44,12 @@ export type LiteralType =
 
 export interface Node {
   type: NodeType;
-  loc: Location;
+  loc: Location
+}
+
+export interface InternalNode {
+  type: NodeType;
+  loc: Location | null;
 }
 
 export interface StripFlags {
@@ -63,8 +68,9 @@ export interface Expression extends Node {
 export interface Program extends Node {
   type: 'Program';
   body: Statement[];
-  blockParams: string[];
+  blockParams?: string[];
   strip: StripFlags;
+  chained: Option<boolean>;
 }
 
 export interface Call extends Node {
@@ -89,6 +95,7 @@ export interface Block extends Call, Statement {
   hash: Hash;
   program: Program;
   inverse: Program;
+  chained: Option<boolean>;
   openStrip: StripFlags;
   inverseStrip: StripFlags;
   closeStrip: StripFlags;
@@ -103,6 +110,7 @@ export interface SubExpression extends Call, Expression {
 
 export interface Path extends Expression {
   type: 'PathExpression';
+  loc: Location;
   data: boolean;
   original: string;
   parts: string[];
@@ -117,6 +125,7 @@ export interface Comment extends Statement {
 
 export interface Content extends Statement {
   type: 'ContentStatement';
+  loc: Location;
   original: string;
   value: string;
   leftStripped: boolean;
@@ -125,9 +134,9 @@ export interface Content extends Statement {
 
 export interface Partial extends Statement {
   type: 'PartialStatement';
-  name: string;
-  params: Param[];
-  hash: Hash;
+  name: Path;
+  params?: Param[];
+  hash?: Hash;
   indent: number;
   strip: StripFlags;
 }
@@ -140,7 +149,7 @@ export interface HashPair extends Node {
   value: Param;
 }
 
-export interface Hash extends Node {
+export interface Hash extends InternalNode {
   type: 'Hash';
   pairs: HashPair[];
 }
