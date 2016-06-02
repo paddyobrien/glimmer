@@ -10,6 +10,7 @@ var handlebarsInlinedTrees = require('./build-support/handlebars-inliner');
 var getVersion = require('git-repo-version');
 var stew = require('broccoli-stew');
 var mv = stew.mv;
+var rm = stew.rm;
 var find = stew.find;
 
 function transpile(tree, label) {
@@ -56,11 +57,10 @@ module.exports = function() {
   }
   var demos = merge(demoTrees);
 
-  var tokenizerPath = path.join(require.resolve('simple-html-tokenizer'), '..', '..', 'lib');
-  // TODO: WAT, why does { } change the output so much....
-  var HTMLTokenizer = find(tokenizerPath, { });
+  var tokenizerPath = path.join(require.resolve('simple-html-tokenizer'), '..', '..', 'src');
+  var tokenizer = mv(tokenizerPath, 'simple-html-tokenizer');
 
-  var tsTree = find(packages, {
+  var tsTree = find(merge([packages, tokenizer]), {
     include: ['**/*.ts'],
     exclude: ['**/*.d.ts']
   });
@@ -68,9 +68,10 @@ module.exports = function() {
   var jsTree = typescript(tsTree, tsOptions);
 
   var libTree = find(jsTree, {
-    include: ['*/index.js', '*/lib/**/*.js']
+    include: ['**/*.js'],
+    exclude: ['**/tests/**/*.js']
   });
-  libTree = merge([libTree, HTMLTokenizer, handlebarsInlinedTrees.compiler]);
+  libTree = merge([libTree, handlebarsInlinedTrees.compiler]);
 
   var es6LibTree = mv(libTree, 'es6');
   libTree = transpile(libTree, 'ES5 Lib Tree');

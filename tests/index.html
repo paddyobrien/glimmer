@@ -11,7 +11,9 @@
   <script src="qunit.js"></script>
   <script src="/testem.js"></script>
   <script src="../assets/loader.js"></script>
-  <script>loader.noConflict({ define: 'enifed' });</script>
+  <script>
+    window.enifed = window.define;
+  </script>
   <!--<script src="export-test-results.js"></script>-->
   <script src="/amd/glimmer-common.amd.js"></script>
   <script src="/amd/glimmer-compiler.amd.js"></script>

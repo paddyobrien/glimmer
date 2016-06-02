@@ -71,6 +71,18 @@ export class Stack<T> {
   private stack: T[] = [];
   public current: Option<T> = null;
 
+  currentPosition(): number {
+    return this.stack.length;
+  }
+
+  previousFrom(n: number): Option<T> {
+    if (n === 0) {
+      return null;
+    } else {
+      return this.stack[n - 1];
+    }
+  }
+
   push(item: T) {
     this.current = item;
     this.stack.push(item);

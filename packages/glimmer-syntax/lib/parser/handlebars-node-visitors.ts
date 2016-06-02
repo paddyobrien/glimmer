@@ -1,7 +1,8 @@
 import { Stack, unwrap } from "glimmer-util";
 import { fromHBS as hbs, builders as b, Node as INode } from "../builders";
 import * as Node from "../builders";
-import { TokenizerEventHandlers, AttributeBuilder, ElementBuilder, TagBuilder, StartTagBuilder } from "./tokenizer-event-handlers";
+import HTMLParser from './html-parser';
+import { AttributeBuilder, ElementBuilder, OpenTagBuilder, CloseTagBuilder } from "./tokens";
 import * as AST from "./handlebars-ast";
 import { SYNTHESIZED_LOC, formatLocation, locFromHBS } from '../ast';
 
@@ -15,7 +16,7 @@ class Fragment implements Node.HasChildren {
 
 export type PrintableMustache = Node.CallNode | AST.Call | Node.Mustache | Node.Block;
 
-export abstract class HandlebarsNodeVisitor extends TokenizerEventHandlers {
+export abstract class HandlebarsNodeVisitor extends HTMLParser {
   protected abstract acceptNode(node: AST.Node): void;
   protected abstract acceptParam<T extends AST.Param | AST.Hash>(node: T): T;
   protected abstract sourceForMustache(mustache: PrintableMustache): string;

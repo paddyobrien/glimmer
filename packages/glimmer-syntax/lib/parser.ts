@@ -53,7 +53,7 @@ export class Parser extends HandlebarsNodeVisitor {
     return this[node.type](node);
   }
 
-  currentElement(): ElementBuilder {
+  get currentElement(): ElementBuilder {
     return unwrap(this.elementStack.current);
   }
 
