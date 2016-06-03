@@ -57,7 +57,7 @@ module.exports = function() {
   }
   var demos = merge(demoTrees);
 
-  var tokenizerPath = path.join(require.resolve('simple-html-tokenizer'), '..', '..', 'src');
+  var tokenizerPath = path.join(require.resolve('simple-html-tokenizer'), '..', '..', '..', 'src');
   var tokenizer = mv(tokenizerPath, 'simple-html-tokenizer');
 
   var tsTree = find(merge([packages, tokenizer]), {
