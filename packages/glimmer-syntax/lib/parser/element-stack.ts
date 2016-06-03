@@ -57,7 +57,10 @@ export default class ElementStack {
       // this guarantees that this.current is never template contents
       throw new Error("Unbalanced pop");
     }
-    return this.stack.pop() as OpenedElementBuilder;
+
+    let element = this.stack.pop() as OpenedElementBuilder;
+    this.current = this.stack[this.stack.length - 1];
+    return element;
   }
 
   appendText(text: DataToken) {
