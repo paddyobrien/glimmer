@@ -27,6 +27,8 @@ import {
 } from './tokens';
 import TreeBuilder from './html-parser';
 
+import { isVoidTag } from 'glimmer-util';
+
 export abstract class ParserState {
   public name: string;
 
@@ -227,10 +229,17 @@ export class NamedStartTagState extends ParserState {
   }
 
   finishTag(builder: TreeBuilder, pos: Position, selfClosing: boolean) {
-    let openTag = this.tag.finalize(pos);
-    let openElement = this.element.finalize(this.tag.finalize(pos));
-    builder.appendElement(openElement);
-    builder.state = InElement.INSTANCE;
+    if (selfClosing || isVoidTag(this.tag.name)) {
+      let element = this.tag.selfClosing(pos);
+      builder.currentElement.append(element);
+      builder.state = InitialState.INSTANCE;
+    } else {
+      let openTag = this.tag.finalize(pos);
+      let openElement = this.element.finalize(this.tag.finalize(pos));
+
+      builder.appendElement(openElement);
+      builder.state = InElement.INSTANCE;
+    }
   }
 }
 
@@ -240,6 +249,7 @@ export class InElement extends ParentNodeState {
   static INSTANCE = new InElement();
 
   openEndTag(builder: TreeBuilder, pos: Position) {
+    debugger;
     builder.state = new OpenEndTagState(this, pos);
   }
 }
@@ -296,8 +306,8 @@ export class AttributeOpenState extends ParserState {
     super();
   }
 
-  appendToAttributeName(builder: TreeBuilder, pos: Position, data: string) {
-    this.attrName.appendToAttributeName(pos, data);
+  appendToData(builder: TreeBuilder, pos: Position, data: string) {
+    this.attrName.appendToData(pos, data);
   }
 
   finishAttributeName(builder: TreeBuilder, pos: Position) {
@@ -359,7 +369,7 @@ export class InnerAttributeValueState extends ParserState {
   }
 
   appendToAttributeValue(builder: TreeBuilder, pos: Position, char: Char) {
-    this.token.appendToAttributeValue(pos, char);
+    this.token.appendToData(pos, char);
   }
 
   finishAttributeValue(builder: TreeBuilder, pos: Position) {

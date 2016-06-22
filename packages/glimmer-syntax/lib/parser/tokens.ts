@@ -8,7 +8,7 @@ export interface PhysicalLocation {
   end: Position;
 }
 
-const COLLAPSED: Location = "COLLAPSED [d2a7ffd1-5023-4eeb-935b-ae95f732d836]";
+export const COLLAPSED: Location = "COLLAPSED [d2a7ffd1-5023-4eeb-935b-ae95f732d836]";
 
 export type Location = PhysicalLocation | "COLLAPSED [d2a7ffd1-5023-4eeb-935b-ae95f732d836]";
 
@@ -30,7 +30,7 @@ interface Constructor<T> {
   new(...args: any[]): T;
 }
 
-export class TokenBuilder extends TokenizerDelegate {
+export class TokenBuilder {
   as<T extends TokenBuilder>(type: Constructor<T>): Option<T> {
     if (this instanceof type) {
       return this as any as T;
@@ -61,7 +61,7 @@ export class LocationBuilder {
     return new LocationBuilder({ line: this.start.line, column: this.start.column });
   }
 
-  finalize(end: Position): Location {
+  finalize(end: Position): PhysicalLocation {
     return new SourceSpan(this.start, end);
   }
 }
@@ -103,7 +103,7 @@ export class LocatableToken {
 }
 
 export class CharsToken extends LocatableToken {
-  constructor(loc: Location, public chars: string) {
+  constructor(public loc: PhysicalLocation, public chars: string) {
     super(loc);
   }
 }
@@ -178,7 +178,7 @@ export type SerializedTreeToken = SerializedElementToken | SerializedDataToken |
 export interface SerializedElementToken extends SerializedLocatableToken {
   type: 'element';
   openTag: SerializedOpenTagToken;
-  closeTag: SerializedCloseTagToken;
+  closeTag: Option<SerializedCloseTagToken>;
   children: Option<SerializedTreeToken[]>;
 }
 
@@ -222,6 +222,11 @@ export class OpenTagBuilder extends LocatableTokenBuilder implements ElementType
   matches(target: ElementType): boolean {
     let tagName = this.tagName;
     return this.tagName.name === target.name && this.tagName.namespace === target.namespace;
+  }
+
+  selfClosing(pos: Position): ElementToken {
+    let loc = this.loc.finalize(pos);
+    return new ElementToken(loc, new OpenTagToken(loc, this.tagName, this.attributes), new CloseTagToken(COLLAPSED, this.tagName), []);
   }
 
   finalize(pos: Position): OpenTagToken {
@@ -295,11 +300,15 @@ export class CloseTagToken extends LocatableToken implements ElementType {
     return this.tagName.namespace;
   }
 
-  toJSON(): SerializedCloseTagToken {
-    return {
-      type: 'close-tag',
-      loc: locToJSON(this.loc),
-      tagName: this.tagName.toJSON()
+  toJSON(): Option<SerializedCloseTagToken> {
+    if (this.loc === COLLAPSED) {
+      return null;
+    } else {
+      return {
+        type: 'close-tag',
+        loc: locToJSON(this.loc),
+        tagName: this.tagName.toJSON()
+      }
     }
   }
 }
@@ -317,7 +326,7 @@ export interface SerializedTagNameToken extends SerializedLocatableToken {
 export class TagNameToken extends CharsToken implements ElementType {
   public namespace = HTMLNS;
 
-  constructor(loc: Location, chars: string = '') {
+  constructor(loc: PhysicalLocation, chars: string = '') {
     super(loc, chars);
   }
 
@@ -358,7 +367,7 @@ export class AttributeBuilder extends LocatableTokenBuilder {
 export interface SerializedAttribute extends SerializedLocatableToken {
   type: 'attribute';
   name: SerializedAttributeNameToken;
-  value: SerializedAttributeValueToken;
+  value: Option<SerializedAttributeValueToken>;
   quote: Option<QUOTE>;
 }
 
@@ -372,7 +381,7 @@ export class Attribute extends LocatableToken {
       type: 'attribute',
       loc: locToJSON(this.loc),
       name: this.name.toJSON(),
-      value: this.value.toJSON(),
+      value: this.value.loc === COLLAPSED ? null : this.value.toJSON(),
       quote: this.quote
     }
   }
@@ -411,24 +420,27 @@ export class AttributeValueTokenBuilder extends LocatableTokenBuilder {
 
 export interface SerializedAttributeValueToken extends SerializedLocatableToken {
   type: 'attribute-value';
-  inner: SerializedInnerAttributeValueToken;
+  inner: Option<SerializedInnerAttributeValueToken>;
 }
 
 export class AttributeValueToken extends LocatableToken {
   static voidValue(): AttributeValueToken {
-    let inner = new InnerAttributeValueToken(COLLAPSED, '');
-    return new AttributeValueToken(COLLAPSED, inner);
+    return new AttributeValueToken(COLLAPSED, null);
   }
 
-  constructor(loc: Location, public inner: InnerAttributeValueToken) {
+  constructor(loc: Location, public inner: Option<InnerAttributeValueToken>) {
     super(loc);
   }
 
-  toJSON(): SerializedAttributeValueToken {
+  toJSON(): Option<SerializedAttributeValueToken> {
+    if (this.loc === COLLAPSED) {
+      return null;
+    }
+
     return {
       type: 'attribute-value',
       loc: locToJSON(this.loc),
-      inner: this.inner.toJSON()
+      inner: this.inner && this.inner.toJSON()
     }
   }
 }
@@ -449,7 +461,7 @@ export interface SerializedInnerAttributeValueToken extends SerializedLocatableT
 }
 
 export class InnerAttributeValueToken extends CharsToken {
-  constructor(loc: Location, chars: string) {
+  constructor(loc: PhysicalLocation, chars: string) {
     super(loc, chars);
   }
 

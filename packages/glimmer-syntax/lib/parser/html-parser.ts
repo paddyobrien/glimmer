@@ -130,7 +130,7 @@ export default class HTMLParser implements Delegate {
   }
 
   appendToAttributeName(p: Position, char: string): void {
-    this.token.appendToData(pos(p), char);
+    this.state.appendToData(this, pos(p), char);
   }
 
   finishAttributeName(p: Position): void {
@@ -188,6 +188,10 @@ type ElementName = string;
 
 export class TemplateContents extends LocatableTokenBuilder {
   protected children: TreeToken[] = [];
+
+  get last() {
+    return this.children[this.children.length - 1];
+  }
 
   append(child: TreeToken) {
     this.children.push(child);
