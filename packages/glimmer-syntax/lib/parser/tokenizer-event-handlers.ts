@@ -192,7 +192,12 @@ export default {
 function assembleAttributeValue(parts, isQuoted, isDynamic, line) {
   if (isDynamic) {
     if (isQuoted) {
-      return assembleConcatenatedValue(parts);
+      if (parts.length === 1) {
+        parts[0].isQuoted = true;
+        return parts[0];
+      } else {
+        return assembleConcatenatedValue(parts);
+      }
     } else {
       if (parts.length === 1) {
         return parts[0];
